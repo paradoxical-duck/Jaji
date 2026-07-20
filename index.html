@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Jaji — find and share school assignments with your classmates." />
+  <title>Jaji — Your School Assignment Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="index.css" />
+  
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+</head>
+<body>
+  <!-- ============ SIGN-UP OVERLAY ============ -->
+  <div id="signup-overlay" class="overlay" aria-modal="true" role="dialog">
+    <div class="signup-card">
+      <div class="signup-accent-bar"></div>
+      <div class="signup-content">
+        <div class="signup-header">
+          <span class="signup-icon">📘</span>
+          <h1>Welcome to <span class="brand">Jaji</span></h1>
+          <p class="signup-subtitle">Create your profile to get started</p>
+        </div>
+
+        <form id="signup-form" novalidate>
+          <!-- Username -->
+          <div class="field">
+            <label for="username">Username</label>
+            <div class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 24 24"><path d="M12 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10Zm0 12c5.52 0 10 2.24 10 5v3H2v-3c0-2.76 4.48-5 10-5Z"/></svg>
+              <input id="username" type="text" placeholder="Pick a cool username" required />
+            </div>
+            <span class="field-error" id="username-error"></span>
+          </div>
+
+          <!-- Real Name -->
+          <div class="field">
+            <label for="realname">Real Name</label>
+            <div class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 24 24"><path d="M12 12c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5Zm0 2c-3.33 0-10 1.67-10 5v2h20v-2c0-3.33-6.67-5-10-5Z"/></svg>
+              <input id="realname" type="text" placeholder="Your full name" required />
+            </div>
+            <span class="field-error" id="realname-error"></span>
+          </div>
+
+          <!-- Email or Phone -->
+          <div class="field">
+            <label for="contact">Email or Phone</label>
+            <div class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2Zm0 4-8 5-8-5V6l8 5 8-5v2Z"/></svg>
+              <input id="contact" type="text" placeholder="email@example.com or phone number" required />
+            </div>
+            <span class="field-error" id="contact-error"></span>
+          </div>
+
+          <!-- Class -->
+          <div class="field">
+            <label for="class-select">Class</label>
+            <div class="input-wrap select-wrap">
+              <svg class="input-icon" viewBox="0 0 24 24"><path d="M5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82ZM12 3 1 9l11 6 9-4.91V17h2V9L12 3Z"/></svg>
+              <select id="class-select" required>
+                <option value="" disabled selected>Select your class</option>
+                <option value="8A">8 A</option>
+                <option value="8B">8 B</option>
+                <option value="8C">8 C</option>
+                <option value="8D">8 D</option>
+                <option value="8E">8 E</option>
+              </select>
+              <svg class="chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+            </div>
+            <span class="field-error" id="class-error"></span>
+          </div>
+
+          <div class="field hidden" id="verification-field">
+            <label for="verification-code">Verification Code</label>
+            <div class="input-wrap">
+              <input id="verification-code" type="text" placeholder="Enter 6-digit code" maxlength="6" />
+            </div>
+            <span class="field-error" id="verification-error"></span>
+          </div>
+
+          <div id="recaptcha-container"></div>
+
+          <button id="signup-btn" type="submit">
+            <span class="btn-text">Get Started</span>
+            <svg class="btn-arrow" viewBox="0 0 24 24"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></svg>
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ HOME SCREEN ============ -->
+  <div id="home" class="home hidden">
+    <!-- Top Navigation -->
+    <nav class="topnav">
+      <div class="nav-left">
+        <span class="nav-logo">📘</span>
+        <span class="nav-brand">Jaji</span>
+      </div>
+
+      <div class="nav-right">
+        <!-- New Assignment -->
+        <button class="nav-btn upload-btn" id="new-assignment-btn">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          <span>Upload</span>
+        </button>
+
+        <!-- Support Dropdown -->
+        <div class="dropdown" id="support-dropdown">
+          <button class="dropdown-trigger" id="support-dropdown-btn">
+            <svg class="dropdown-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2Zm1 17h-2v-2h2v2Zm2.07-7.75-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25Z"/></svg>
+            <span>Support</span>
+            <svg class="chevron-sm" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+          </button>
+          <div class="dropdown-menu" id="support-menu">
+            <button class="dropdown-item" id="feedback-btn">
+              <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2Zm0 14H5.17L4 17.17V4h16v12Z"/></svg>
+              Feedback
+            </button>
+            <button class="dropdown-item" id="donate-btn">
+              <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35Z"/></svg>
+              Donate
+            </button>
+            <div style="height: 1px; background: var(--beige-dark); margin: 4px 0;"></div>
+            <button class="dropdown-item" id="signout-btn" style="color: #ef4444;">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
+              Sign Out
+            </button>
+          </div>
+        </div>
+
+        <!-- User avatar -->
+          <div class="user-pill" id="user-pill">
+            <div class="avatar" id="user-avatar">N</div>
+            <span class="user-name" id="user-display-name">Nikita</span>
+            <button class="btn-text-subtle" id="logout-btn" style="margin-left: 12px; font-size: 0.85rem; padding: 4px 8px;">Sign Out</button>
+          </div>
+      </div>
+    </nav>
+
+    <!-- ── Upload Modal (Supplier Only) ── -->
+    <div class="overlay hidden" id="upload-overlay">
+      <div class="modal" id="upload-modal">
+        <button class="modal-close" id="upload-close-btn">×</button>
+        
+        <div class="modal-header">
+          <div class="modal-icon blue" style="background: var(--blue-light); color: var(--blue);">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+          </div>
+          <h2>New Assignment</h2>
+          <p>Upload a new assignment for your class.</p>
+        </div>
+
+        <form class="modal-form" id="upload-form">
+          <div class="form-group">
+            <label for="upload-title">Title</label>
+            <input type="text" id="upload-title" placeholder="e.g. Ex 2D Pg 14 — Exponents" required />
+          </div>
+
+          <div class="form-group">
+            <label for="upload-subject">Subject</label>
+            <select id="upload-subject" class="custom-select" required>
+              <option value="" disabled selected>Select subject...</option>
+              <option value="Math">Math</option>
+              <option value="Chemistry">Chemistry</option>
+              <option value="Biology">Biology</option>
+              <option value="Physics">Physics</option>
+              <option value="English Language/Literature">English Language/Literature</option>
+              <option value="Marathi">Marathi</option>
+              <option value="Hindi Language/Literature">Hindi Language/Literature</option>
+              <option value="History">History</option>
+              <option value="Geography">Geography</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="upload-type">Type</label>
+            <select id="upload-type" class="custom-select" required>
+              <option value="" disabled selected>Select type...</option>
+              <option value="Classwork">Classwork</option>
+              <option value="Homework">Homework</option>
+              <option value="Notes">Notes</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Upload Images</label>
+            <div class="dropzone" id="upload-dropzone">
+              <svg viewBox="0 0 24 24" class="dropzone-icon" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zm-5.04-6.71l-2.75 3.54-1.96-2.36L6.5 17h11l-3.54-4.71z"/></svg>
+              <p>Drag & drop or click to browse</p>
+              <span class="dropzone-hint">PNG, JPG up to 2 MB (Multiple allowed)</span>
+              <input type="file" id="upload-file-input" accept="image/jpeg,image/png,.jpg,.png" multiple hidden />
+            </div>
+          </div>
+
+          <button type="submit" class="btn primary full-width">
+            <span class="btn-text">Upload to Class Hub</span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- ── Toast Container ── -->
+    <div id="toast-container"></div>
+
+    <!-- ── Main Content ── -->
+    <main class="main-content">
+
+      <!-- Search & Filter Bar -->
+      <div class="search-bar-row">
+        <!-- Class Selector -->
+        <div class="dropdown" id="class-dropdown">
+          <button class="class-pill-btn" id="class-dropdown-btn">
+            <span id="nav-class-label">8A</span>
+            <svg class="chevron-sm" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+          </button>
+          <div class="dropdown-menu" id="class-menu">
+            <button class="dropdown-item active" data-class="8A">8 A</button>
+            <button class="dropdown-item" data-class="8B">8 B</button>
+            <button class="dropdown-item" data-class="8C">8 C</button>
+            <button class="dropdown-item" data-class="8D">8 D</button>
+            <button class="dropdown-item" data-class="8E">8 E</button>
+          </div>
+        </div>
+
+        <!-- Search Input -->
+        <div class="search-wrap">
+          <svg class="search-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5Zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14Z"/></svg>
+          <input type="text" id="search-input" placeholder="Search assignments..." />
+        </div>
+
+        <!-- Subject Filter Pills -->
+        <div class="subject-pills" id="subject-pills">
+          <button class="subject-pill active" data-subject="all">All</button>
+          <button class="subject-pill" data-subject="Math">Math</button>
+          <button class="subject-pill" data-subject="Chemistry">Chemistry</button>
+          <button class="subject-pill" data-subject="Biology">Biology</button>
+          <button class="subject-pill" data-subject="Physics">Physics</button>
+          <button class="subject-pill" data-subject="English Language/Literature">English</button>
+          <button class="subject-pill" data-subject="Marathi">Marathi</button>
+          <button class="subject-pill" data-subject="Hindi Language/Literature">Hindi</button>
+          <button class="subject-pill" data-subject="History">History</button>
+          <button class="subject-pill" data-subject="Geography">Geography</button>
+        </div>
+
+        <!-- Type Filter Pills -->
+        <div class="type-pills" id="type-pills" style="margin-top: 10px; display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px;">
+          <button class="type-pill active" data-type="all">All Types</button>
+          <button class="type-pill" data-type="Classwork">Classwork</button>
+          <button class="type-pill" data-type="Homework">Homework</button>
+          <button class="type-pill" data-type="Notes">Notes</button>
+        </div>
+      </div>
+
+      <!-- Feed Label -->
+      <div class="feed-header">
+        <h2 id="feed-title">Latest from your class</h2>
+      </div>
+
+      <!-- Assignment Feed -->
+      <div class="feed" id="feed">
+        <!-- Cards rendered by JS -->
+      </div>
+
+      <!-- Empty State -->
+      <div class="empty-state hidden" id="empty-state">
+        <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6ZM6 20V4h7v5h5v11H6Z"/></svg>
+        <p>No assignments found</p>
+      </div>
+
+      <!-- Request CTA -->
+      <div class="request-cta" id="request-cta">
+        <span>Didn't find what you were looking for?</span>
+        <button id="request-btn">Request</button>
+      </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>© 2026 Jaji · Made with 💙</span>
+    </footer>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast">  </div>
+
+  <!-- ── Expanded View Modal ── -->
+  <div class="overlay hidden" id="expanded-overlay">
+    <div class="expanded-modal">
+      <button class="modal-close" id="expanded-close-btn" aria-label="Close modal">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+      
+      <div class="expanded-layout">
+        <div class="expanded-left">
+          <div class="expanded-bg-blur" id="expanded-bg-blur"></div>
+        </div>
+        
+        <div class="expanded-right">
+          <div class="expanded-details">
+            <h2 id="expanded-title"></h2>
+            <p class="expanded-meta">
+              <span id="expanded-author"></span> • 
+              <span id="expanded-date"></span>
+            </p>
+            <div class="expanded-stats" style="display: flex; gap: 16px; margin-bottom: 24px; font-size: 0.9rem; color: var(--text-muted);">
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <span id="expanded-stars" style="display: flex; align-items: center; gap: 2px;"></span>
+              </div>
+              <div><strong id="expanded-purchases" style="color: var(--text);">0</strong> downloads</div>
+              <div><strong id="expanded-pages" style="color: var(--text);">1</strong> pages</div>
+            </div>
+            <div class="expanded-tags">
+              <span class="expanded-tag" id="expanded-subject"></span>
+              <span class="expanded-tag type" id="expanded-type"></span>
+            </div>
+          </div>
+          
+          <div class="expanded-actions">
+            <button class="btn primary full-width" id="expanded-download-btn">
+              Download
+            </button>
+            <button class="btn-text-subtle" id="expanded-report-btn">
+              Report this assignment
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
