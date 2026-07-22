@@ -46,7 +46,7 @@ The data model is organized under `classrooms/{classId}` with nested members, co
 
 ### EmailJS sign-in delivery
 
-Firebase Admin generates every one-time Auth link inside the `sendEmailSignInLink` Cloud Function. EmailJS sends that link using a template with these parameters:
+Firebase Admin generates every one-time Auth link inside the free Netlify Function at `netlify/functions/send-email-sign-in-link.mjs`. EmailJS sends that link using a template with these parameters:
 
 - `{{to_email}}`
 - `{{to_name}}`
@@ -54,17 +54,17 @@ Firebase Admin generates every one-time Auth link inside the `sendEmailSignInLin
 - `{{app_name}}`
 - `{{expires_in}}`
 
-Configure the server-side secrets before deploying functions:
+Configure these server-only environment variables on the `jaji-auth` Netlify project:
 
 ```bash
-firebase functions:secrets:set EMAILJS_SERVICE_ID
-firebase functions:secrets:set EMAILJS_TEMPLATE_ID
-firebase functions:secrets:set EMAILJS_PUBLIC_KEY
-firebase functions:secrets:set EMAILJS_PRIVATE_KEY
-firebase deploy --only functions
+FIREBASE_SERVICE_ACCOUNT_JSON
+EMAILJS_SERVICE_ID
+EMAILJS_TEMPLATE_ID
+EMAILJS_PUBLIC_KEY
+EMAILJS_PRIVATE_KEY # optional
 ```
 
-Cloud Functions deployment requires the Firebase project to use the Blaze plan. The function is rate-limited to one email per address per minute and the EmailJS private key is never shipped to the browser.
+The function is deployed on Netlify's free tier, so Firebase remains on the Spark plan. It is rate-limited to one email per address per minute and no Firebase Admin or EmailJS credential is shipped to the browser.
 
 ## Validation
 
@@ -83,10 +83,10 @@ pnpm build
 firebase deploy --only hosting
 ```
 
-`netlify.toml` remains available only as a fallback. To deploy there instead:
+The `jaji-auth` Netlify project hosts only the secure email-link function; the app itself stays on Firebase Hosting. Deploy the function with:
 
 ```bash
-netlify deploy --build --prod
+netlify deploy --prod
 ```
 
 If a fallback hostname is used, add it to Firebase Authentication’s authorized domains so sign-in links work there.

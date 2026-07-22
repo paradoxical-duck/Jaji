@@ -47,8 +47,7 @@ import {
   updateProfile
 } from 'firebase/auth';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
-import { auth, db, functions } from './firebase';
+import { auth, db } from './firebase';
 import {
   castVote,
   createAnnouncement,
@@ -88,7 +87,18 @@ const NAV_ITEMS = [
 
 const EMAIL_LINK_KEY = 'jaji_email_for_sign_in';
 const PENDING_PROFILE_KEY = 'jaji_pending_profile';
-const sendEmailLink = httpsCallable(functions, 'sendEmailSignInLink');
+const AUTH_EMAIL_ENDPOINT = import.meta.env.VITE_AUTH_EMAIL_ENDPOINT || 'https://jaji-auth.netlify.app/.netlify/functions/send-email-sign-in-link';
+
+async function sendEmailLink(payload) {
+  const response = await fetch(AUTH_EMAIL_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'The email service could not send your link. Try again shortly.');
+  return result;
+}
 
 async function completeEmailLink(email) {
   const credential = await signInWithEmailLink(auth, email.trim().toLowerCase(), window.location.href);

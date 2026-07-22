@@ -21,7 +21,7 @@ export default [
     }
   },
   {
-    files: ['functions/**/*.js'],
+    files: ['netlify/functions/**/*.mjs'],
     languageOptions: {
       globals: { ...globals.node, fetch: 'readonly' }
     }
