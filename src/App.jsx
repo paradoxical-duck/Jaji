@@ -67,6 +67,7 @@ import {
   subscribeMessages,
   subscribeUserClassrooms
 } from './data';
+import { uploadAssignmentFiles } from './drive';
 import {
   firebaseMessage,
   initials,
@@ -340,6 +341,8 @@ function CompleteEmailLinkScreen({ error, onComplete }) {
 function Workspace({ user }) {
   const [classes, setClasses] = useState([]);
   const [classesReady, setClassesReady] = useState(false);
+  const [classesError, setClassesError] = useState('');
+  const [classLoadAttempt, setClassLoadAttempt] = useState(0);
   const [selectedClassId, setSelectedClassId] = useState(localStorage.getItem('jaji_active_class') || '');
   const [membership, setMembership] = useState(null);
   const [members, setMembers] = useState([]);
@@ -357,13 +360,27 @@ function Workspace({ user }) {
   const isOwner = membership?.role === 'owner';
 
   useEffect(() => subscribeUserClassrooms(user.uid, (items) => {
+    setClassesError('');
     setClasses(items);
     setClassesReady(true);
     setSelectedClassId((current) => {
       if (items.some((item) => item.id === current)) return current;
       return items[0]?.id || '';
     });
-  }, (error) => setToast(firebaseMessage(error))), [user.uid]);
+  }, (error) => {
+    setClassesError(firebaseMessage(error));
+    setClassesReady(true);
+  }), [user.uid, classLoadAttempt]);
+
+  useEffect(() => {
+    if (!classesError || classes.length || classLoadAttempt >= 2) return undefined;
+    const timer = window.setTimeout(() => {
+      setClassesError('');
+      setClassesReady(false);
+      setClassLoadAttempt((attempt) => attempt + 1);
+    }, 700 * (classLoadAttempt + 1));
+    return () => window.clearTimeout(timer);
+  }, [classesError, classes.length, classLoadAttempt]);
 
   useEffect(() => {
     if (!selectedClassId) return undefined;
@@ -404,6 +421,13 @@ function Workspace({ user }) {
   }
 
   if (!classesReady) return <FullPageLoader />;
+  if (classesError && !classes.length) {
+    return <LoadFailure message={classesError} onRetry={() => {
+      setClassesError('');
+      setClassesReady(false);
+      setClassLoadAttempt((attempt) => attempt + 1);
+    }} />;
+  }
   if (!classes.length) {
     return <ClassroomLobby user={user} onDone={(item) => { setSelectedClassId(item.id); setToast(`Welcome to ${item.name}.`); }} />;
   }
@@ -469,6 +493,21 @@ function Workspace({ user }) {
       {selectedAssignment && <AssignmentDetail assignment={selectedAssignment} activeClass={activeClass} user={user} onClose={() => setSelectedAssignment(null)} showNotice={showNotice} />}
       {toast && <div className="toast" role="status"><Check size={17} />{toast}</div>}
     </div>
+  );
+}
+
+function LoadFailure({ message, onRetry }) {
+  return (
+    <main className="load-failure">
+      <BrandMark />
+      <div className="load-failure__card">
+        <span><CircleAlert size={24} /></span>
+        <p className="eyebrow">Connection interrupted</p>
+        <h1>Jaji couldn’t finish loading.</h1>
+        <p>{message}</p>
+        <button className="primary-button primary-button--large" onClick={onRetry}>Try again <ArrowRight size={18} /></button>
+      </div>
+    </main>
   );
 }
 
@@ -781,15 +820,14 @@ function JoinClassForm({ user, onDone }) {
 }
 
 function CreateClassForm({ user, onDone }) {
-  const [values, setValues] = useState({ name: '', subject: '', section: '', description: '' });
+  const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const update = (field) => (event) => setValues((current) => ({ ...current, [field]: event.target.value }));
   async function submit(event) {
     event.preventDefault(); setBusy(true); setError('');
-    try { onDone(await createClassroom(user, values)); } catch (err) { setError(firebaseMessage(err)); } finally { setBusy(false); }
+    try { onDone(await createClassroom(user, { name })); } catch (err) { setError(firebaseMessage(err)); } finally { setBusy(false); }
   }
-  return <form className="stack-form class-form" onSubmit={submit}><div className="form-row"><Field label="Class name" icon={GraduationCap}><input value={values.name} onChange={update('name')} placeholder="10B Study Room" required /></Field><Field label="Section" icon={Hash} hint="Optional"><input value={values.section} onChange={update('section')} placeholder="10B" /></Field></div><Field label="Subject or focus" icon={BookOpen}><input value={values.subject} onChange={update('subject')} placeholder="All subjects" required /></Field><label className="plain-field"><span>Short description <small>Optional</small></span><textarea value={values.description} onChange={update('description')} placeholder="What this classroom is for…" maxLength={240} /></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<button className="primary-button primary-button--large" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Plus size={18} />} Create classroom</button></form>;
+  return <form className="stack-form class-form" onSubmit={submit}><Field label="Class name" icon={GraduationCap}><input value={name} onChange={(event) => setName(event.target.value)} placeholder="10B Study Room" maxLength={80} required autoFocus /></Field><p className="form-help">That’s all you need. Jaji will generate the private join code automatically.</p>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<button className="primary-button primary-button--large" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Plus size={18} />} Create classroom</button></form>;
 }
 
 function ContributorRequestModal({ activeClass, user, existing, onClose, onDone }) {
@@ -808,19 +846,28 @@ function AssignmentFormModal({ activeClass, user, onClose, onDone }) {
   const [values, setValues] = useState({ title: '', subject: '', kind: 'Homework', dueDate: '', description: '' });
   const [files, setFiles] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState('');
   const [error, setError] = useState('');
   const update = (field) => (event) => setValues((current) => ({ ...current, [field]: event.target.value }));
   async function submit(event) {
     event.preventDefault(); setBusy(true); setError('');
-    try { await createAssignment(activeClass.id, user, values, files); onDone(); } catch (err) { setError(firebaseMessage(err)); setBusy(false); }
+    try {
+      setBusyLabel(files.length ? 'Connecting to Drive…' : 'Publishing…');
+      const attachments = await uploadAssignmentFiles(activeClass, files);
+      setBusyLabel('Publishing…');
+      await createAssignment(activeClass.id, user, values, attachments);
+      onDone();
+    } catch (err) {
+      setError(firebaseMessage(err)); setBusy(false); setBusyLabel('');
+    }
   }
   function chooseFiles(event) {
     const picked = [...event.target.files];
-    const invalid = picked.find((file) => file.size > 10 * 1024 * 1024 || (!file.type.startsWith('image/') && file.type !== 'application/pdf'));
-    if (invalid) { setError('Upload images or PDFs up to 10 MB each.'); return; }
+    const invalid = picked.find((file) => file.size > 25 * 1024 * 1024 || (!file.type.startsWith('image/') && file.type !== 'application/pdf'));
+    if (invalid) { setError('Upload images or PDFs up to 25 MB each.'); return; }
     setFiles(picked.slice(0, 5)); setError('');
   }
-  return <Modal title="Publish class work" eyebrow={activeClass.name} onClose={onClose} size="modal-card--wide"><form className="stack-form" onSubmit={submit}><Field label="Assignment title" icon={FileText}><input value={values.title} onChange={update('title')} placeholder="Trigonometry exercise 7.2" maxLength={100} required /></Field><div className="form-row"><Field label="Subject" icon={BookOpen}><input value={values.subject} onChange={update('subject')} placeholder="Mathematics" required /></Field><label className="plain-field"><span>Work type</span><select value={values.kind} onChange={update('kind')}><option>Homework</option><option>Classwork</option><option>Notes</option><option>Study guide</option><option>Answer key</option></select></label></div><label className="plain-field"><span>What should classmates know? <small>Optional</small></span><textarea value={values.description} onChange={update('description')} placeholder="Mention the chapter, questions covered, or anything that still needs checking." maxLength={1000} /></label><label className="upload-zone"><input type="file" accept="image/*,.pdf,application/pdf" multiple onChange={chooseFiles} /><span><Paperclip size={22} /></span><strong>{files.length ? `${files.length} file${files.length === 1 ? '' : 's'} ready` : 'Attach images or PDFs'}</strong><small>{files.length ? files.map((file) => file.name).join(', ') : 'Up to 5 files · 10 MB each'}</small></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <PenLine size={17} />} Publish work</button></div></form></Modal>;
+  return <Modal title="Publish class work" eyebrow={activeClass.name} onClose={onClose} size="modal-card--wide"><form className="stack-form" onSubmit={submit}><Field label="Assignment title" icon={FileText}><input value={values.title} onChange={update('title')} placeholder="Trigonometry exercise 7.2" maxLength={100} required /></Field><div className="form-row"><Field label="Subject" icon={BookOpen}><input value={values.subject} onChange={update('subject')} placeholder="Mathematics" required /></Field><label className="plain-field"><span>Work type</span><select value={values.kind} onChange={update('kind')}><option>Homework</option><option>Classwork</option><option>Notes</option><option>Study guide</option><option>Answer key</option></select></label></div><label className="plain-field"><span>What should classmates know? <small>Optional</small></span><textarea value={values.description} onChange={update('description')} placeholder="Mention the chapter, questions covered, or anything that still needs checking." maxLength={1000} /></label><label className="upload-zone"><input type="file" accept="image/*,.pdf,application/pdf" multiple onChange={chooseFiles} disabled={busy} /><span><Paperclip size={22} /></span><strong>{files.length ? `${files.length} file${files.length === 1 ? '' : 's'} ready` : 'Attach images or PDFs'}</strong><small>{files.length ? files.map((file) => file.name).join(', ') : 'Saved to your Google Drive · up to 5 files, 25 MB each'}</small></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={busy}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <PenLine size={17} />} {busy ? busyLabel : 'Publish work'}</button></div></form></Modal>;
 }
 
 function AnnouncementFormModal({ activeClass, user, onClose, onDone }) {

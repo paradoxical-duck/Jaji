@@ -13,11 +13,23 @@ import {
   updateDoc,
   writeBatch
 } from 'firebase/firestore';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { db, storage } from './firebase';
+import { db } from './firebase';
 import { generateClassCode, normalizeClassCode } from './utils';
 
 const mapSnapshot = (snapshot) => snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+
+async function getDocWithRetry(reference, attempts = 3) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await getDoc(reference);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
 
 export async function createClassroom(user, details) {
   const classRef = doc(collection(db, 'classrooms'));
@@ -30,9 +42,9 @@ export async function createClassroom(user, details) {
 
   const classData = {
     name: details.name.trim(),
-    subject: details.subject.trim(),
-    section: details.section.trim(),
-    description: details.description.trim(),
+    subject: 'Classroom',
+    section: '',
+    description: '',
     code,
     ownerId: user.uid,
     ownerName: user.displayName,
@@ -85,11 +97,15 @@ export async function joinClassroom(user, rawCode) {
 
 export function subscribeUserClassrooms(uid, onData, onError) {
   return onSnapshot(collection(db, 'users', uid, 'classrooms'), async (snapshot) => {
-    const classes = await Promise.all(snapshot.docs.map(async (reference) => {
-      const classSnap = await getDoc(doc(db, 'classrooms', reference.id));
-      return classSnap.exists() ? { id: classSnap.id, ...classSnap.data() } : null;
-    }));
-    onData(classes.filter(Boolean));
+    try {
+      const classes = await Promise.all(snapshot.docs.map(async (reference) => {
+        const classSnap = await getDocWithRetry(doc(db, 'classrooms', reference.id));
+        return classSnap.exists() ? { id: classSnap.id, ...classSnap.data() } : null;
+      }));
+      onData(classes.filter(Boolean));
+    } catch (error) {
+      onError(error);
+    }
   }, onError);
 }
 
@@ -145,15 +161,8 @@ export async function reviewContributorRequest(classId, request, approved) {
   await batch.commit();
 }
 
-export async function createAssignment(classId, user, values, files) {
+export async function createAssignment(classId, user, values, attachments = []) {
   const assignmentRef = doc(collection(db, 'classrooms', classId, 'assignments'));
-  const attachments = [];
-  for (const file of files) {
-    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-');
-    const fileRef = ref(storage, `classrooms/${classId}/assignments/${assignmentRef.id}/${user.uid}/${Date.now()}-${safeName}`);
-    await uploadBytes(fileRef, file, { contentType: file.type });
-    attachments.push({ name: file.name, type: file.type, size: file.size, url: await getDownloadURL(fileRef) });
-  }
   await setDoc(assignmentRef, {
     title: values.title.trim(),
     description: values.description.trim(),

@@ -123,6 +123,11 @@ a { color: inherit; }
 .mail-orbit > svg { transform: rotate(4deg); }
 .mail-orbit span { position: absolute; right: -7px; bottom: -7px; width: 28px; height: 28px; border: 3px solid #fff; border-radius: 50%; display: grid; place-items: center; color: #fff; background: var(--aqua); }
 .full-loader { min-height: 100vh; display: flex; align-items: center; justify-content: center; gap: 20px; background: var(--canvas); }
+.load-failure { min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 42px 22px; background: var(--canvas); }
+.load-failure__card { width: min(470px, 100%); margin: auto; padding: 42px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--white); box-shadow: var(--shadow-md); text-align: center; }
+.load-failure__card > span { width: 54px; height: 54px; margin: 0 auto 22px; border-radius: 16px; display: grid; place-items: center; color: var(--danger); background: #fff0f1; }
+.load-failure__card h1 { margin-bottom: 12px; font-family: 'Newsreader', Georgia, serif; font-size: 34px; }
+.load-failure__card > p:not(.eyebrow) { margin-bottom: 24px; color: var(--muted); font-size: 12px; line-height: 1.7; }
 
 /* Workspace shell */
 .workspace { min-height: 100vh; display: grid; grid-template-columns: 244px minmax(0, 1fr); background: var(--canvas); }
