@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "jaji-5a88d"
+    "default": "jaji-app",
+    "backend": "jaji-5a88d"
   }
 }

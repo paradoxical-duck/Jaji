@@ -39,7 +39,7 @@ In the Firebase console:
 4. Deploy the checked-in access rules:
 
 ```bash
-firebase deploy --only firestore:rules,firestore:indexes,storage
+firebase deploy --only firestore:rules,firestore:indexes,storage --project backend
 ```
 
 The data model is organized under `classrooms/{classId}` with nested members, contributor requests, assignments, votes, messages, and announcements. A small `users/{uid}/classrooms` reference collection makes each user’s classroom switcher efficient.
@@ -54,7 +54,14 @@ pnpm build
 
 ## Netlify
 
-`netlify.toml` contains the production build, SPA fallback, cache policy, and baseline security headers. Import the GitHub repository in Netlify or deploy directly:
+The production app is hosted at [jaji-app.web.app](https://jaji-app.web.app). Build and deploy it with:
+
+```bash
+pnpm build
+firebase deploy --only hosting
+```
+
+`netlify.toml` remains available as a fallback and contains the production build, SPA fallback, cache policy, and baseline security headers. To deploy there instead:
 
 ```bash
 netlify deploy --build --prod
