@@ -1,0 +1,95 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+    function memberPath(classId) {
+      return /databases/$(database)/documents/classrooms/$(classId)/members/$(request.auth.uid);
+    }
+    function isMember(classId) { return signedIn() && exists(memberPath(classId)); }
+    function role(classId) { return get(memberPath(classId)).data.role; }
+    function isContributor(classId) {
+      return isMember(classId) && role(classId) in ['owner', 'contributor'];
+    }
+    function isOwner(classId) {
+      return signedIn() && get(/databases/$(database)/documents/classrooms/$(classId)).data.ownerId == request.auth.uid;
+    }
+
+    match /users/{uid} {
+      allow create: if isSelf(uid);
+      allow read: if signedIn();
+      allow update, delete: if isSelf(uid);
+
+      match /classrooms/{classId} {
+        allow read, create, update, delete: if isSelf(uid);
+      }
+    }
+
+    match /joinCodes/{code} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && getAfter(/databases/$(database)/documents/classrooms/$(request.resource.data.classId)).data.ownerId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+    }
+
+    match /classrooms/{classId} {
+      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
+      allow read: if isMember(classId) || isOwner(classId);
+      allow update, delete: if isOwner(classId);
+
+      match /members/{uid} {
+        allow read: if isMember(classId);
+        allow create: if signedIn() && (
+          (uid == request.auth.uid
+            && request.resource.data.role == 'member'
+            && request.resource.data.joinCode is string
+            && get(/databases/$(database)/documents/joinCodes/$(request.resource.data.joinCode)).data.classId == classId) ||
+          (uid == request.auth.uid
+            && request.resource.data.role == 'owner'
+            && getAfter(/databases/$(database)/documents/classrooms/$(classId)).data.ownerId == request.auth.uid)
+        );
+        allow update: if isOwner(classId) || (isSelf(uid) && request.resource.data.role == resource.data.role);
+        allow delete: if isOwner(classId) || isSelf(uid);
+      }
+
+      match /contributorRequests/{uid} {
+        allow read: if isOwner(classId) || isSelf(uid);
+        allow create: if isSelf(uid) && isMember(classId) && request.resource.data.status == 'pending';
+        allow update: if isOwner(classId);
+        allow delete: if isOwner(classId) || isSelf(uid);
+      }
+
+      match /assignments/{assignmentId} {
+        allow read: if isMember(classId);
+        allow create: if isContributor(classId) && request.resource.data.authorId == request.auth.uid;
+        allow delete: if isOwner(classId) || (isContributor(classId) && resource.data.authorId == request.auth.uid);
+        allow update: if isContributor(classId) || (
+          isMember(classId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['upvotes', 'downvotes', 'score', 'updatedAt'])
+          && request.resource.data.upvotes >= 0
+          && request.resource.data.downvotes >= 0
+        );
+
+        match /votes/{uid} {
+          allow read: if isMember(classId);
+          allow create, update: if isSelf(uid) && isMember(classId)
+            && request.resource.data.value in [-1, 1];
+          allow delete: if isSelf(uid) && isMember(classId);
+        }
+
+        match /messages/{messageId} {
+          allow read: if isMember(classId);
+          allow create: if isMember(classId) && request.resource.data.authorId == request.auth.uid;
+          allow update, delete: if isOwner(classId) || (signedIn() && resource.data.authorId == request.auth.uid);
+        }
+      }
+
+      match /announcements/{announcementId} {
+        allow read: if isMember(classId);
+        allow create: if isContributor(classId) && request.resource.data.authorId == request.auth.uid;
+        allow update, delete: if isOwner(classId) || (isContributor(classId) && resource.data.authorId == request.auth.uid);
+      }
+    }
+  }
+}

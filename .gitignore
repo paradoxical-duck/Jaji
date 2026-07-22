@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.local
+.netlify/
+.firebase/
+firebase-debug.log
+*.log
+.DS_Store

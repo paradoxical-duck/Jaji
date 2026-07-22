@@ -1,0 +1,23 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() { return request.auth != null; }
+    function memberPath(classId) {
+      return /databases/(default)/documents/classrooms/$(classId)/members/$(request.auth.uid);
+    }
+    function isContributor(classId) {
+      return signedIn()
+        && firestore.exists(memberPath(classId))
+        && firestore.get(memberPath(classId)).data.role in ['owner', 'contributor'];
+    }
+
+    match /classrooms/{classId}/assignments/{assignmentId}/{uid}/{fileName} {
+      allow read: if signedIn() && firestore.exists(memberPath(classId));
+      allow create: if isContributor(classId)
+        && uid == request.auth.uid
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('(image/.*|application/pdf)');
+      allow delete: if isContributor(classId) && uid == request.auth.uid;
+    }
+  }
+}

@@ -1,0 +1,820 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Archive,
+  ArrowRight,
+  Bell,
+  BookOpen,
+  Check,
+  CheckCheck,
+  ChevronDown,
+  CircleAlert,
+  ClipboardCheck,
+  Clock3,
+  Copy,
+  FileImage,
+  FileText,
+  GraduationCap,
+  Hash,
+  Inbox,
+  KeyRound,
+  LayoutDashboard,
+  LoaderCircle,
+  LockKeyhole,
+  LogOut,
+  Mail,
+  Menu,
+  MessageCircle,
+  MoreHorizontal,
+  Paperclip,
+  PenLine,
+  Plus,
+  Search,
+  Send,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  ThumbsDown,
+  ThumbsUp,
+  Trash2,
+  UserCheck,
+  UserPlus,
+  Users,
+  X
+} from 'lucide-react';
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile
+} from 'firebase/auth';
+import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { auth, db } from './firebase';
+import {
+  castVote,
+  createAnnouncement,
+  createAssignment,
+  createClassroom,
+  getMyVote,
+  joinClassroom,
+  removeAnnouncement,
+  requestContributor,
+  reviewContributorRequest,
+  sendMessage,
+  subscribeAnnouncements,
+  subscribeAssignments,
+  subscribeContributorRequests,
+  subscribeMember,
+  subscribeMembers,
+  subscribeMessages,
+  subscribeUserClassrooms
+} from './data';
+import {
+  firebaseMessage,
+  initials,
+  normalizeClassCode,
+  roleLabel,
+  timeAgo,
+  verificationState
+} from './utils';
+
+const NAV_ITEMS = [
+  { id: 'home', label: 'Home', icon: LayoutDashboard },
+  { id: 'assignments', label: 'Assignments', icon: BookOpen },
+  { id: 'threads', label: 'Threads', icon: MessageCircle },
+  { id: 'reminders', label: 'Reminders', icon: Bell },
+  { id: 'people', label: 'People', icon: Users },
+  { id: 'inbox', label: 'Inbox', icon: Inbox }
+];
+
+function App() {
+  const [user, setUser] = useState(undefined);
+
+  useEffect(() => onAuthStateChanged(auth, setUser), []);
+
+  if (user === undefined) return <FullPageLoader />;
+  if (!user) return <AuthScreen />;
+  if (!user.emailVerified) return <VerifyEmailScreen user={user} />;
+  return <Workspace user={user} />;
+}
+
+function FullPageLoader() {
+  return (
+    <div className="full-loader" aria-label="Loading Jaji">
+      <BrandMark />
+      <LoaderCircle className="spin" size={22} />
+    </div>
+  );
+}
+
+function BrandMark({ light = false }) {
+  return (
+    <div className={`brand-mark ${light ? 'brand-mark--light' : ''}`} aria-label="Jaji">
+      <span className="brand-glyph"><BookOpen size={19} strokeWidth={2.3} /></span>
+      <span>jaji<span className="brand-dot">.</span></span>
+    </div>
+  );
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState('signup');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [showReset, setShowReset] = useState(false);
+  const [form, setForm] = useState({ name: '', email: '', password: '', code: '' });
+
+  const update = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }));
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage('');
+    try {
+      if (showReset) {
+        await sendPasswordResetEmail(auth, form.email.trim());
+        setMessage('Password reset email sent. Check your inbox.');
+        setShowReset(false);
+        return;
+      }
+      if (mode === 'login') {
+        await signInWithEmailAndPassword(auth, form.email.trim(), form.password);
+        return;
+      }
+      if (form.name.trim().length < 2) throw new Error('Enter the name your classmates will recognize.');
+      if (form.password.length < 8) throw new Error('Use at least 8 characters for your password.');
+      const credential = await createUserWithEmailAndPassword(auth, form.email.trim(), form.password);
+      await updateProfile(credential.user, { displayName: form.name.trim() });
+      await setDoc(doc(db, 'users', credential.user.uid), {
+        displayName: form.name.trim(),
+        email: credential.user.email,
+        createdAt: serverTimestamp(),
+        lastSeenAt: serverTimestamp()
+      });
+      if (form.code.trim()) {
+        try {
+          await joinClassroom({ ...credential.user, displayName: form.name.trim() }, form.code);
+        } catch (error) {
+          sessionStorage.setItem('jaji_onboarding_notice', error.message);
+        }
+      }
+      await sendEmailVerification(credential.user, { url: window.location.origin });
+    } catch (error) {
+      setMessage(firebaseMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth-shell">
+      <section className="auth-story">
+        <div className="auth-story__top">
+          <BrandMark light />
+          <span className="quiet-chip"><ShieldCheck size={14} /> Built for your class, not the whole internet</span>
+        </div>
+        <div className="auth-thesis">
+          <span className="auth-kicker">The shared class desk</span>
+          <h1>Know which work<br /><em>actually checks out.</em></h1>
+          <p>Assignments, reminders, and the conversation around them—organized in one place and verified by the people in your class.</p>
+        </div>
+        <div className="desk-preview" aria-hidden="true">
+          <div className="desk-note desk-note--back"><span>MATHS · HOMEWORK</span><strong>Quadratic equations</strong></div>
+          <div className="desk-note desk-note--front">
+            <span className="preview-status"><CheckCheck size={14} /> COMMUNITY VERIFIED</span>
+            <strong>Trigonometry exercise 7.2</strong>
+            <div className="preview-meta"><span>12 found this correct</span><span>8 replies</span></div>
+          </div>
+          <div className="desk-pin"><Sparkles size={18} /></div>
+        </div>
+        <p className="auth-footnote">Private classroom membership · Community verification · Real-time discussion</p>
+      </section>
+
+      <section className="auth-panel">
+        <div className="auth-card">
+          <div className="mobile-brand"><BrandMark /></div>
+          <p className="eyebrow">{showReset ? 'Account recovery' : mode === 'signup' ? 'Your desk is ready' : 'Welcome back'}</p>
+          <h2>{showReset ? 'Reset your password' : mode === 'signup' ? 'Create your account' : 'Sign in to Jaji'}</h2>
+          <p className="auth-intro">
+            {showReset ? 'We’ll send a secure reset link to your email.' : mode === 'signup' ? 'Join with a class code now, or create your own class after signup.' : 'Pick up where your class left off.'}
+          </p>
+
+          {!showReset && (
+            <div className="segmented" role="tablist" aria-label="Account action">
+              <button className={mode === 'signup' ? 'active' : ''} onClick={() => { setMode('signup'); setMessage(''); }} type="button">Sign up</button>
+              <button className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setMessage(''); }} type="button">Sign in</button>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="stack-form">
+            {mode === 'signup' && !showReset && (
+              <Field label="Your name" icon={Users}>
+                <input value={form.name} onChange={update('name')} autoComplete="name" placeholder="Aarav Sharma" required />
+              </Field>
+            )}
+            <Field label="Email address" icon={Mail}>
+              <input value={form.email} onChange={update('email')} type="email" autoComplete="email" placeholder="you@school.edu" required />
+            </Field>
+            {!showReset && (
+              <Field label="Password" icon={LockKeyhole} hint={mode === 'signup' ? '8+ characters' : ''}>
+                <input value={form.password} onChange={update('password')} type="password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} placeholder="••••••••" required />
+              </Field>
+            )}
+            {mode === 'signup' && !showReset && (
+              <Field label="Class code" icon={Hash} hint="Optional">
+                <input className="code-input" value={form.code} onChange={(event) => setForm((current) => ({ ...current, code: normalizeClassCode(event.target.value) }))} placeholder="ABC123" maxLength={6} />
+              </Field>
+            )}
+
+            {message && <div className={message.includes('sent') ? 'form-message success' : 'form-message'}><CircleAlert size={16} /> {message}</div>}
+
+            <button className="primary-button primary-button--large" disabled={busy} type="submit">
+              {busy ? <LoaderCircle className="spin" size={18} /> : showReset ? 'Send reset link' : mode === 'signup' ? 'Create my account' : 'Sign in'}
+              {!busy && <ArrowRight size={18} />}
+            </button>
+          </form>
+
+          {(mode === 'login' || showReset) && (
+            <button className="text-button auth-alt" type="button" onClick={() => { setShowReset((value) => !value); setMessage(''); }}>
+              {showReset ? 'Back to sign in' : 'Forgot your password?'}
+            </button>
+          )}
+          {mode === 'signup' && <p className="legal-copy">By creating an account, you agree to use Jaji respectfully and only share work you have permission to distribute.</p>}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function Field({ label, icon: Icon, hint, children }) {
+  return (
+    <label className="field-label">
+      <span>{label}{hint && <small>{hint}</small>}</span>
+      <div className="field-control"><Icon size={17} />{children}</div>
+    </label>
+  );
+}
+
+function VerifyEmailScreen({ user }) {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState(sessionStorage.getItem('jaji_onboarding_notice') || '');
+
+  async function checkVerification() {
+    setBusy(true);
+    await user.reload();
+    if (auth.currentUser?.emailVerified) window.location.reload();
+    else setStatus('Not verified yet. Open the link in your email, then check again.');
+    setBusy(false);
+  }
+
+  async function resend() {
+    setBusy(true);
+    try {
+      await sendEmailVerification(user, { url: window.location.origin });
+      setStatus('A fresh verification email is on its way.');
+    } catch (error) {
+      setStatus(firebaseMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="verification-shell">
+      <BrandMark />
+      <section className="verification-card">
+        <div className="mail-orbit"><Mail size={32} /><span><Check size={14} /></span></div>
+        <p className="eyebrow">One quick check</p>
+        <h1>Verify your email</h1>
+        <p>We sent a verification link to <strong>{user.email}</strong>. This keeps classroom membership tied to a real account.</p>
+        {status && <div className="form-message"><CircleAlert size={16} /> {status}</div>}
+        <button className="primary-button primary-button--large" onClick={checkVerification} disabled={busy}>
+          {busy ? <LoaderCircle className="spin" size={18} /> : <CheckCheck size={18} />} I’ve verified my email
+        </button>
+        <button className="text-button" onClick={resend} disabled={busy}>Send another email</button>
+        <button className="text-button muted" onClick={() => signOut(auth)}>Use a different account</button>
+      </section>
+    </main>
+  );
+}
+
+function Workspace({ user }) {
+  const [classes, setClasses] = useState([]);
+  const [classesReady, setClassesReady] = useState(false);
+  const [selectedClassId, setSelectedClassId] = useState(localStorage.getItem('jaji_active_class') || '');
+  const [membership, setMembership] = useState(null);
+  const [members, setMembers] = useState([]);
+  const [assignments, setAssignments] = useState([]);
+  const [announcements, setAnnouncements] = useState([]);
+  const [requests, setRequests] = useState([]);
+  const [page, setPage] = useState('home');
+  const [mobileNav, setMobileNav] = useState(false);
+  const [modal, setModal] = useState(null);
+  const [selectedAssignment, setSelectedAssignment] = useState(null);
+  const [toast, setToast] = useState('');
+
+  const activeClass = classes.find((item) => item.id === selectedClassId) || null;
+  const isContributor = ['owner', 'contributor'].includes(membership?.role);
+  const isOwner = membership?.role === 'owner';
+
+  useEffect(() => subscribeUserClassrooms(user.uid, (items) => {
+    setClasses(items);
+    setClassesReady(true);
+    setSelectedClassId((current) => {
+      if (items.some((item) => item.id === current)) return current;
+      return items[0]?.id || '';
+    });
+  }, (error) => setToast(firebaseMessage(error))), [user.uid]);
+
+  useEffect(() => {
+    if (!selectedClassId) return undefined;
+    localStorage.setItem('jaji_active_class', selectedClassId);
+    setPage('home');
+    const unsubs = [
+      subscribeMember(selectedClassId, user.uid, setMembership, (error) => setToast(firebaseMessage(error))),
+      subscribeMembers(selectedClassId, setMembers, (error) => setToast(firebaseMessage(error))),
+      subscribeAssignments(selectedClassId, setAssignments, (error) => setToast(firebaseMessage(error))),
+      subscribeAnnouncements(selectedClassId, setAnnouncements, (error) => setToast(firebaseMessage(error)))
+    ];
+    return () => unsubs.forEach((unsubscribe) => unsubscribe?.());
+  }, [selectedClassId, user.uid]);
+
+  useEffect(() => {
+    if (!selectedClassId || !membership) return undefined;
+    return subscribeContributorRequests(selectedClassId, user.uid, membership.role === 'owner', setRequests, (error) => setToast(firebaseMessage(error)));
+  }, [selectedClassId, user.uid, membership]);
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timer = window.setTimeout(() => setToast(''), 4200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const readKey = `jaji_read_${user.uid}_${selectedClassId}`;
+  const readAt = Number(localStorage.getItem(readKey) || 0);
+  const inboxItems = useMemo(() => buildInbox(assignments, announcements, requests, isOwner), [assignments, announcements, requests, isOwner]);
+  const unreadCount = inboxItems.filter((item) => item.date?.getTime() > readAt).length;
+
+  function selectClass(classId) {
+    setSelectedClassId(classId);
+    setMobileNav(false);
+  }
+
+  function showNotice(message) {
+    setToast(message);
+  }
+
+  if (!classesReady) return <FullPageLoader />;
+  if (!classes.length) {
+    return <ClassroomLobby user={user} onDone={(item) => { setSelectedClassId(item.id); setToast(`Welcome to ${item.name}.`); }} />;
+  }
+  if (!activeClass) return <FullPageLoader />;
+
+  const pageProps = { activeClass, membership, members, assignments, announcements, requests, user, isContributor, isOwner, setModal, setPage, setSelectedAssignment, showNotice };
+
+  return (
+    <div className="workspace">
+      <aside className={`sidebar ${mobileNav ? 'sidebar--open' : ''}`}>
+        <div className="sidebar-top">
+          <BrandMark light />
+          <button className="icon-button sidebar-close" onClick={() => setMobileNav(false)} aria-label="Close navigation"><X size={20} /></button>
+        </div>
+        <ClassSwitcher classes={classes} activeClass={activeClass} onSelect={selectClass} onAdd={() => setModal('classActions')} />
+        <nav className="main-nav" aria-label="Main navigation">
+          <span className="nav-label">Classroom</span>
+          {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
+            <button key={id} className={page === id ? 'active' : ''} onClick={() => { setPage(id); setMobileNav(false); }}>
+              <Icon size={18} /><span>{label}</span>
+              {id === 'inbox' && unreadCount > 0 && <b>{unreadCount > 9 ? '9+' : unreadCount}</b>}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="mini-profile">
+            <Avatar name={user.displayName} />
+            <div><strong>{user.displayName}</strong><span>{roleLabel(membership?.role)}</span></div>
+            <button className="icon-button icon-button--dark" onClick={() => signOut(auth)} aria-label="Sign out"><LogOut size={17} /></button>
+          </div>
+        </div>
+      </aside>
+      {mobileNav && <button className="nav-scrim" onClick={() => setMobileNav(false)} aria-label="Close navigation" />}
+
+      <div className="workspace-main">
+        <header className="topbar">
+          <button className="icon-button mobile-menu" onClick={() => setMobileNav(true)} aria-label="Open navigation"><Menu size={20} /></button>
+          <div className="topbar-class">
+            <span>{activeClass?.subject || 'Classroom'}</span>
+            <strong>{activeClass?.name}</strong>
+          </div>
+          <div className="topbar-actions">
+            {isContributor && <button className="secondary-button topbar-create" onClick={() => setModal('assignment')}><Plus size={17} /> Add work</button>}
+            <button className="inbox-button" onClick={() => setPage('inbox')} aria-label={`${unreadCount} unread inbox items`}><Inbox size={19} />{unreadCount > 0 && <span>{unreadCount}</span>}</button>
+            <Avatar name={user.displayName} small />
+          </div>
+        </header>
+
+        <main className="page-stage">
+          {page === 'home' && <Dashboard {...pageProps} />}
+          {page === 'assignments' && <AssignmentsPage {...pageProps} />}
+          {page === 'threads' && <ThreadsPage {...pageProps} />}
+          {page === 'reminders' && <RemindersPage {...pageProps} />}
+          {page === 'people' && <PeoplePage {...pageProps} />}
+          {page === 'inbox' && <InboxPage items={inboxItems} readAt={readAt} onReadAll={() => { localStorage.setItem(readKey, String(Date.now())); setToast('Inbox marked as read.'); setPage('inbox'); }} onOpen={(item) => { if (item.assignment) setSelectedAssignment(item.assignment); else if (item.type === 'request') setPage('people'); else setPage('reminders'); }} />}
+        </main>
+      </div>
+
+      {modal === 'classActions' && <ClassActionsModal user={user} onClose={() => setModal(null)} onDone={(item) => { setModal(null); selectClass(item.id); showNotice(`Welcome to ${item.name}.`); }} />}
+      {modal === 'assignment' && <AssignmentFormModal activeClass={activeClass} user={user} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Assignment published to your class.'); }} />}
+      {modal === 'announcement' && <AnnouncementFormModal activeClass={activeClass} user={user} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Reminder posted to the class.'); }} />}
+      {modal === 'contributor' && <ContributorRequestModal activeClass={activeClass} user={user} existing={requests[0]} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Request sent to the class creator.'); }} />}
+      {selectedAssignment && <AssignmentDetail assignment={selectedAssignment} activeClass={activeClass} user={user} onClose={() => setSelectedAssignment(null)} showNotice={showNotice} />}
+      {toast && <div className="toast" role="status"><Check size={17} />{toast}</div>}
+    </div>
+  );
+}
+
+function ClassroomLobby({ user, onDone }) {
+  const [mode, setMode] = useState('join');
+  return (
+    <main className="lobby-shell">
+      <div className="lobby-top"><BrandMark /><button className="text-button" onClick={() => signOut(auth)}><LogOut size={16} /> Sign out</button></div>
+      <section className="lobby-copy">
+        <p className="eyebrow">Welcome, {user.displayName?.split(' ')[0]}</p>
+        <h1>Pull up a chair.</h1>
+        <p>Join an existing classroom with its six-character code, or create the first one for your class.</p>
+      </section>
+      <section className="lobby-card">
+        <div className="segmented"><button className={mode === 'join' ? 'active' : ''} onClick={() => setMode('join')}>Join a class</button><button className={mode === 'create' ? 'active' : ''} onClick={() => setMode('create')}>Create a class</button></div>
+        {mode === 'join' ? <JoinClassForm user={user} onDone={onDone} /> : <CreateClassForm user={user} onDone={onDone} />}
+      </section>
+    </main>
+  );
+}
+
+function ClassSwitcher({ classes, activeClass, onSelect, onAdd }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="class-switcher">
+      <button className="class-switcher__current" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <span className="class-monogram">{initials(activeClass?.name)}</span>
+        <span><small>Current class</small><strong>{activeClass?.name}</strong></span>
+        <ChevronDown size={16} />
+      </button>
+      {open && (
+        <div className="class-menu">
+          {classes.map((item) => <button key={item.id} className={item.id === activeClass?.id ? 'active' : ''} onClick={() => { onSelect(item.id); setOpen(false); }}><span>{initials(item.name)}</span><div><strong>{item.name}</strong><small>{item.subject}</small></div>{item.id === activeClass?.id && <Check size={15} />}</button>)}
+          <button className="class-menu__add" onClick={() => { onAdd(); setOpen(false); }}><Plus size={16} /> Join or create class</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dashboard(props) {
+  const { activeClass, membership, members, assignments, announcements, requests, user, isContributor, isOwner, setModal, setPage, setSelectedAssignment } = props;
+  const topAssignments = [...assignments].sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 3);
+  const latestAnnouncement = announcements[0];
+  const pendingRequest = requests.find((item) => item.status === 'pending');
+  return (
+    <div className="dashboard page-enter">
+      <section className="welcome-strip">
+        <div>
+          <p className="eyebrow">{new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+          <h1>Good to see you, {user.displayName?.split(' ')[0]}.</h1>
+          <p>{assignments.length ? `${assignments.length} pieces of class work are ready to browse and verify.` : 'This desk is clear. Add the first piece of class work when you’re ready.'}</p>
+        </div>
+        {isContributor ? (
+          <button className="primary-button" onClick={() => setModal('assignment')}><PenLine size={17} /> Publish class work</button>
+        ) : pendingRequest ? (
+          <span className="status-pill pending"><Clock3 size={15} /> Contributor request pending</span>
+        ) : (
+          <button className="secondary-button" onClick={() => setModal('contributor')}><UserPlus size={17} /> Request to contribute</button>
+        )}
+      </section>
+
+      <div className="dashboard-grid">
+        <div className="dashboard-primary">
+          {latestAnnouncement && (
+            <button className={`announcement-banner tone-${latestAnnouncement.tone || 'info'}`} onClick={() => setPage('reminders')}>
+              <span className="announcement-banner__icon"><Bell size={20} /></span>
+              <span><small>Class reminder · {timeAgo(latestAnnouncement.createdAt)}</small><strong>{latestAnnouncement.title}</strong><p>{latestAnnouncement.body}</p></span>
+              <ArrowRight size={19} />
+            </button>
+          )}
+          <SectionHeading eyebrow="Checked by your class" title="Most trusted work" action="View all" onAction={() => setPage('assignments')} />
+          {topAssignments.length ? (
+            <div className="assignment-grid">{topAssignments.map((assignment, index) => <AssignmentCard key={assignment.id} assignment={assignment} rank={index + 1} onOpen={() => setSelectedAssignment(assignment)} />)}</div>
+          ) : (
+            <EmptyState icon={ClipboardCheck} title="No work has landed yet" body={isContributor ? 'Publish the first assignment and give your class a place to begin.' : 'A contributor will publish class work here.'} action={isContributor ? 'Add class work' : null} onAction={() => setModal('assignment')} />
+          )}
+          <SectionHeading eyebrow="The room" title="Class activity" />
+          <div className="activity-cards">
+            <button onClick={() => setPage('people')}><span className="activity-icon coral"><Users size={20} /></span><strong>{members.length}</strong><small>people in this class</small><ArrowRight size={17} /></button>
+            <button onClick={() => setPage('threads')}><span className="activity-icon blue"><MessageCircle size={20} /></span><strong>{assignments.length}</strong><small>assignment threads</small><ArrowRight size={17} /></button>
+            <button onClick={() => setPage('reminders')}><span className="activity-icon yellow"><Bell size={20} /></span><strong>{announcements.length}</strong><small>class reminders</small><ArrowRight size={17} /></button>
+          </div>
+        </div>
+
+        <aside className="dashboard-rail">
+          <div className="rail-card class-pass">
+            <div className="rail-card__heading"><div><span>Class pass</span><strong>{activeClass.name}</strong></div><KeyRound size={20} /></div>
+            <p>Share this code with classmates you want to invite.</p>
+            <CopyCode code={activeClass.code} />
+            <div className="class-pass__meta"><span>{activeClass.subject}</span>{activeClass.section && <span>{activeClass.section}</span>}<span>{roleLabel(membership?.role)}</span></div>
+          </div>
+          {isOwner && requests.filter((item) => item.status === 'pending').length > 0 && (
+            <button className="rail-card request-alert" onClick={() => setPage('people')}>
+              <span><UserCheck size={19} /></span><div><small>Needs your attention</small><strong>{requests.filter((item) => item.status === 'pending').length} contributor request{requests.filter((item) => item.status === 'pending').length === 1 ? '' : 's'}</strong></div><ArrowRight size={17} />
+            </button>
+          )}
+          <div className="rail-card roster-peek">
+            <div className="rail-title"><strong>People here</strong><button onClick={() => setPage('people')}>See all</button></div>
+            <div className="avatar-stack">{members.slice(0, 5).map((member) => <Avatar key={member.id} name={member.name} title={member.name} />)}{members.length > 5 && <span>+{members.length - 5}</span>}</div>
+            <p>{members.filter((member) => member.role === 'contributor').length + 1} people can publish work and reminders.</p>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function AssignmentsPage({ assignments, isContributor, setModal, setSelectedAssignment }) {
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState('top');
+  const visible = useMemo(() => {
+    const filtered = assignments.filter((item) => `${item.title} ${item.subject} ${item.authorName}`.toLowerCase().includes(search.toLowerCase()));
+    return [...filtered].sort((a, b) => sort === 'top' ? (b.score || 0) - (a.score || 0) : (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+  }, [assignments, search, sort]);
+  return (
+    <div className="page-enter">
+      <PageHeading eyebrow="Class library" title="Assignments" body="Browse the work your class has shared. Top-rated, community-verified answers rise first.">
+        {isContributor && <button className="primary-button" onClick={() => setModal('assignment')}><Plus size={17} /> Add work</button>}
+      </PageHeading>
+      <div className="toolbar">
+        <label className="search-control"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title, subject, or contributor" /></label>
+        <div className="sort-control"><button className={sort === 'top' ? 'active' : ''} onClick={() => setSort('top')}>Top verified</button><button className={sort === 'new' ? 'active' : ''} onClick={() => setSort('new')}>Newest</button></div>
+      </div>
+      {visible.length ? <div className="assignment-grid assignment-grid--wide">{visible.map((assignment, index) => <AssignmentCard key={assignment.id} assignment={assignment} rank={sort === 'top' ? index + 1 : null} onOpen={() => setSelectedAssignment(assignment)} />)}</div> : <EmptyState icon={Archive} title="No assignments match" body="Try a different search, or publish new class work." />}
+    </div>
+  );
+}
+
+function AssignmentCard({ assignment, rank, onOpen }) {
+  const state = verificationState(assignment.upvotes, assignment.downvotes);
+  const attachment = assignment.attachments?.[0];
+  return (
+    <button className="assignment-card" onClick={onOpen}>
+      <div className={`assignment-card__cover cover-${assignment.kind?.toLowerCase() || 'work'}`}>
+        <span className="subject-stamp">{assignment.subject}</span>
+        {rank && <span className="rank-stamp">#{rank}</span>}
+        {attachment?.type?.startsWith('image/') ? <img src={attachment.url} alt="" /> : <div className="paper-lines"><span /><span /><span /><span /></div>}
+      </div>
+      <div className="assignment-card__body">
+        <div className={`verification-badge ${state.key}`}>{state.key === 'verified' ? <CheckCheck size={14} /> : state.key === 'review' ? <CircleAlert size={14} /> : <Clock3 size={14} />}{state.label}</div>
+        <h3>{assignment.title}</h3>
+        <p>by {assignment.authorName} · {timeAgo(assignment.createdAt)}</p>
+        <div className="card-footer"><span><ThumbsUp size={15} /> {assignment.upvotes || 0}</span><span><ThumbsDown size={15} /> {assignment.downvotes || 0}</span><span className="card-open">Open <ArrowRight size={15} /></span></div>
+      </div>
+    </button>
+  );
+}
+
+function ThreadsPage({ assignments, activeClass, user, setSelectedAssignment }) {
+  const [active, setActive] = useState(assignments[0] || null);
+  useEffect(() => {
+    if (active && !assignments.some((item) => item.id === active.id)) setActive(assignments[0] || null);
+    if (!active && assignments.length) setActive(assignments[0]);
+  }, [assignments, active]);
+  return (
+    <div className="page-enter">
+      <PageHeading eyebrow="Ask, explain, improve" title="Assignment threads" body="Keep questions attached to the work they’re about, so answers stay useful later." />
+      {assignments.length ? (
+        <div className="thread-layout">
+          <div className="thread-list">
+            <div className="thread-list__label">Choose a discussion</div>
+            {assignments.map((item) => <button key={item.id} className={active?.id === item.id ? 'active' : ''} onClick={() => setActive(item)}><span className="thread-file"><FileText size={18} /></span><div><strong>{item.title}</strong><small>{item.subject} · by {item.authorName}</small></div><ChevronDown size={16} /></button>)}
+          </div>
+          <ThreadRoom assignment={active} activeClass={activeClass} user={user} onOpenWork={() => setSelectedAssignment(active)} />
+        </div>
+      ) : <EmptyState icon={MessageCircle} title="Threads begin with an assignment" body="Once a contributor publishes work, everyone in class can discuss it here." />}
+    </div>
+  );
+}
+
+function ThreadRoom({ assignment, activeClass, user, onOpenWork, compact = false }) {
+  const [messages, setMessages] = useState([]);
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+  const bottomRef = useRef(null);
+  useEffect(() => {
+    if (!assignment?.id) return undefined;
+    return subscribeMessages(activeClass.id, assignment.id, setMessages, () => {});
+  }, [activeClass.id, assignment?.id]);
+  useEffect(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), [messages.length]);
+  async function submit(event) {
+    event.preventDefault();
+    if (!body.trim()) return;
+    setBusy(true);
+    try { await sendMessage(activeClass.id, assignment.id, user, body); setBody(''); } finally { setBusy(false); }
+  }
+  if (!assignment) return null;
+  return (
+    <section className={`thread-room ${compact ? 'thread-room--compact' : ''}`}>
+      <header><div><span>Discussion</span><strong>{assignment.title}</strong></div>{onOpenWork && <button className="text-button" onClick={onOpenWork}>View work <ArrowRight size={15} /></button>}</header>
+      <div className="message-stream">
+        {!messages.length && <div className="thread-empty"><MessageCircle size={24} /><strong>Start the conversation</strong><p>Ask a question, explain a step, or flag something that needs another look.</p></div>}
+        {messages.map((message) => <div className={`message ${message.authorId === user.uid ? 'message--mine' : ''}`} key={message.id}><Avatar name={message.authorName} small /><div><span><strong>{message.authorName}</strong><time>{timeAgo(message.createdAt)}</time></span><p>{message.body}</p></div></div>)}
+        <div ref={bottomRef} />
+      </div>
+      <form className="message-composer" onSubmit={submit}><Avatar name={user.displayName} small /><input value={body} onChange={(event) => setBody(event.target.value)} placeholder="Write a helpful reply…" maxLength={800} /><button disabled={busy || !body.trim()} aria-label="Send reply">{busy ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button></form>
+    </section>
+  );
+}
+
+function RemindersPage({ announcements, isContributor, isOwner, activeClass, setModal, showNotice }) {
+  async function remove(item) {
+    if (!window.confirm(`Remove “${item.title}”?`)) return;
+    try { await removeAnnouncement(activeClass.id, item.id); showNotice('Reminder removed.'); } catch (error) { showNotice(firebaseMessage(error)); }
+  }
+  return (
+    <div className="page-enter">
+      <PageHeading eyebrow="Class-wide notices" title="Reminders" body="Announcements from your class creator and contributors, kept clear of assignment discussions.">
+        {isContributor && <button className="primary-button" onClick={() => setModal('announcement')}><Plus size={17} /> Post reminder</button>}
+      </PageHeading>
+      {announcements.length ? <div className="reminder-list">{announcements.map((item) => <article className={`reminder-card tone-${item.tone || 'info'}`} key={item.id}><span className="reminder-card__icon">{item.tone === 'urgent' ? <CircleAlert size={21} /> : item.tone === 'celebrate' ? <Sparkles size={21} /> : <Bell size={21} />}</span><div><div className="reminder-meta"><span>{item.pinned && 'PINNED · '}{timeAgo(item.createdAt)}</span>{(isOwner) && <button className="icon-button" onClick={() => remove(item)} aria-label="Remove reminder"><Trash2 size={16} /></button>}</div><h3>{item.title}</h3><p>{item.body}</p><small>Posted by {item.authorName}</small></div></article>)}</div> : <EmptyState icon={Bell} title="No reminders right now" body={isContributor ? 'Post a class-wide reminder for deadlines, materials, or a change of plan.' : 'Class-wide announcements will appear here.'} action={isContributor ? 'Post a reminder' : null} onAction={() => setModal('announcement')} />}
+    </div>
+  );
+}
+
+function PeoplePage({ members, requests, isOwner, activeClass, showNotice }) {
+  const groups = [
+    ['Class creator', members.filter((item) => item.role === 'owner')],
+    ['Contributors', members.filter((item) => item.role === 'contributor')],
+    ['Members', members.filter((item) => item.role === 'member')]
+  ];
+  async function review(request, approved) {
+    try { await reviewContributorRequest(activeClass.id, request, approved); showNotice(approved ? `${request.requesterName} can now contribute.` : 'Request declined.'); } catch (error) { showNotice(firebaseMessage(error)); }
+  }
+  const pending = requests.filter((item) => item.status === 'pending');
+  return (
+    <div className="page-enter">
+      <PageHeading eyebrow={`${members.length} people`} title="People in this class" body="See who can publish work and who is here as a member." />
+      {isOwner && pending.length > 0 && <section className="request-queue"><div className="request-queue__heading"><span><UserCheck size={20} /></span><div><p className="eyebrow">Creator review</p><h2>Contributor requests</h2></div></div>{pending.map((request) => <div className="request-row" key={request.id}><Avatar name={request.requesterName} /><div><strong>{request.requesterName}</strong><span>{request.requesterEmail}</span>{request.note && <p>“{request.note}”</p>}</div><div><button className="secondary-button" onClick={() => review(request, false)}>Decline</button><button className="primary-button" onClick={() => review(request, true)}><Check size={16} /> Approve</button></div></div>)}</section>}
+      <div className="people-groups">{groups.map(([label, items]) => items.length > 0 && <section key={label}><div className="group-heading"><h2>{label}</h2><span>{items.length}</span></div><div className="people-list">{items.map((member) => <div className="person-row" key={member.id}><Avatar name={member.name} /><div><strong>{member.name}</strong><span>{member.email}</span></div><span className={`role-chip ${member.role}`}>{member.role === 'owner' ? <ShieldCheck size={14} /> : member.role === 'contributor' ? <PenLine size={14} /> : <Users size={14} />}{roleLabel(member.role)}</span><button className="icon-button" aria-label={`More actions for ${member.name}`}><MoreHorizontal size={18} /></button></div>)}</div></section>)}</div>
+    </div>
+  );
+}
+
+function InboxPage({ items, readAt, onReadAll, onOpen }) {
+  const [filter, setFilter] = useState('all');
+  const visible = items.filter((item) => filter === 'all' || item.type === filter);
+  return (
+    <div className="page-enter">
+      <PageHeading eyebrow="Everything that changed" title="Inbox" body="A single summary of new assignments, announcements, and contributor decisions.">
+        <button className="secondary-button" onClick={onReadAll}><CheckCheck size={17} /> Mark all read</button>
+      </PageHeading>
+      <div className="inbox-filters"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>All</button><button className={filter === 'assignment' ? 'active' : ''} onClick={() => setFilter('assignment')}>Assignments</button><button className={filter === 'reminder' ? 'active' : ''} onClick={() => setFilter('reminder')}>Reminders</button><button className={filter === 'request' ? 'active' : ''} onClick={() => setFilter('request')}>Requests</button></div>
+      {visible.length ? <div className="inbox-list">{visible.map((item) => { const unread = item.date?.getTime() > readAt; return <button key={item.id} onClick={() => onOpen(item)} className={unread ? 'unread' : ''}><span className={`inbox-type ${item.type}`}>{item.type === 'assignment' ? <BookOpen size={19} /> : item.type === 'reminder' ? <Bell size={19} /> : <UserCheck size={19} />}</span><div><span>{item.kicker}</span><strong>{item.title}</strong><p>{item.body}</p></div><time>{timeAgo(item.date)}</time>{unread && <i />}</button>; })}</div> : <EmptyState icon={Inbox} title="You’re all caught up" body="New work, reminders, and requests will collect here." />}
+    </div>
+  );
+}
+
+function buildInbox(assignments, announcements, requests, isOwner) {
+  const items = [
+    ...assignments.map((item) => ({ id: `assignment-${item.id}`, type: 'assignment', kicker: `${item.subject} · new work`, title: item.title, body: `${item.authorName} shared an assignment.`, date: item.createdAt?.toDate?.() || null, assignment: item })),
+    ...announcements.map((item) => ({ id: `reminder-${item.id}`, type: 'reminder', kicker: 'Class reminder', title: item.title, body: item.body, date: item.createdAt?.toDate?.() || null })),
+    ...requests.filter((item) => isOwner ? item.status === 'pending' : item.status !== 'pending').map((item) => ({ id: `request-${item.id}-${item.status}`, type: 'request', kicker: isOwner ? 'Contributor request' : 'Request update', title: isOwner ? `${item.requesterName} wants to contribute` : `Your request was ${item.status}`, body: isOwner ? item.note || 'Review their request to publish work and reminders.' : `The class creator ${item.status} your contributor request.`, date: (item.reviewedAt || item.createdAt)?.toDate?.() || null }))
+  ];
+  return items.sort((a, b) => (b.date || 0) - (a.date || 0));
+}
+
+function PageHeading({ eyebrow, title, body, children }) {
+  return <header className="page-heading"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p>{body}</p></div>{children && <div>{children}</div>}</header>;
+}
+
+function SectionHeading({ eyebrow, title, action, onAction }) {
+  return <div className="section-heading"><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></div>{action && <button onClick={onAction}>{action} <ArrowRight size={16} /></button>}</div>;
+}
+
+function EmptyState({ icon: Icon, title, body, action, onAction }) {
+  return <div className="empty-state"><span><Icon size={27} /></span><h3>{title}</h3><p>{body}</p>{action && <button className="secondary-button" onClick={onAction}><Plus size={16} /> {action}</button>}</div>;
+}
+
+function Avatar({ name, small = false, ...props }) {
+  const palette = ['navy', 'coral', 'aqua', 'gold', 'violet'];
+  const index = [...(name || '?')].reduce((sum, char) => sum + char.charCodeAt(0), 0) % palette.length;
+  return <span className={`avatar avatar--${palette[index]} ${small ? 'avatar--small' : ''}`} {...props}>{initials(name)}</span>;
+}
+
+function CopyCode({ code }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    await navigator.clipboard.writeText(code);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  }
+  return <button className="copy-code" onClick={copy}><strong>{code}</strong><span>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? 'Copied' : 'Copy'}</span></button>;
+}
+
+function Modal({ title, eyebrow, onClose, children, size = '' }) {
+  useEffect(() => {
+    const close = (event) => event.key === 'Escape' && onClose();
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [onClose]);
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className={`modal-card ${size}`} role="dialog" aria-modal="true" aria-label={title}><header><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={20} /></button></header>{children}</section></div>;
+}
+
+function ClassActionsModal({ user, onClose, onDone }) {
+  const [mode, setMode] = useState('join');
+  return <Modal title={mode === 'join' ? 'Join a classroom' : 'Create a classroom'} eyebrow="Switch desks" onClose={onClose}><div className="segmented modal-segmented"><button className={mode === 'join' ? 'active' : ''} onClick={() => setMode('join')}>Join with code</button><button className={mode === 'create' ? 'active' : ''} onClick={() => setMode('create')}>Create new</button></div>{mode === 'join' ? <JoinClassForm user={user} onDone={onDone} /> : <CreateClassForm user={user} onDone={onDone} />}</Modal>;
+}
+
+function JoinClassForm({ user, onDone }) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function submit(event) {
+    event.preventDefault(); setBusy(true); setError('');
+    try { onDone(await joinClassroom(user, code)); } catch (err) { setError(firebaseMessage(err)); } finally { setBusy(false); }
+  }
+  return <form className="stack-form class-form" onSubmit={submit}><div className="join-code-field"><label htmlFor="join-code">Six-character class code</label><input id="join-code" autoFocus className="code-input" value={code} onChange={(event) => setCode(normalizeClassCode(event.target.value))} placeholder="ABC123" maxLength={6} required /></div><p className="form-help">Ask the class creator for the code shown on their Jaji home screen.</p>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<button className="primary-button primary-button--large" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <KeyRound size={18} />} Join classroom</button></form>;
+}
+
+function CreateClassForm({ user, onDone }) {
+  const [values, setValues] = useState({ name: '', subject: '', section: '', description: '' });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const update = (field) => (event) => setValues((current) => ({ ...current, [field]: event.target.value }));
+  async function submit(event) {
+    event.preventDefault(); setBusy(true); setError('');
+    try { onDone(await createClassroom(user, values)); } catch (err) { setError(firebaseMessage(err)); } finally { setBusy(false); }
+  }
+  return <form className="stack-form class-form" onSubmit={submit}><div className="form-row"><Field label="Class name" icon={GraduationCap}><input value={values.name} onChange={update('name')} placeholder="10B Study Room" required /></Field><Field label="Section" icon={Hash} hint="Optional"><input value={values.section} onChange={update('section')} placeholder="10B" /></Field></div><Field label="Subject or focus" icon={BookOpen}><input value={values.subject} onChange={update('subject')} placeholder="All subjects" required /></Field><label className="plain-field"><span>Short description <small>Optional</small></span><textarea value={values.description} onChange={update('description')} placeholder="What this classroom is for…" maxLength={240} /></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<button className="primary-button primary-button--large" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Plus size={18} />} Create classroom</button></form>;
+}
+
+function ContributorRequestModal({ activeClass, user, existing, onClose, onDone }) {
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  if (existing?.status === 'pending') return <Modal title="Request already sent" eyebrow="Contributor access" onClose={onClose}><div className="modal-note"><Clock3 size={24} /><p>The class creator has your request. You’ll see their decision in your inbox.</p></div></Modal>;
+  async function submit(event) {
+    event.preventDefault(); setBusy(true);
+    try { await requestContributor(activeClass.id, user, note); onDone(); } catch (err) { setError(firebaseMessage(err)); setBusy(false); }
+  }
+  return <Modal title="Request contributor access" eyebrow={activeClass.name} onClose={onClose}><p className="modal-intro">Contributors can publish assignments and class-wide reminders. The class creator will review your request.</p><form className="stack-form" onSubmit={submit}><label className="plain-field"><span>Why would you like to contribute? <small>Optional</small></span><textarea value={note} onChange={(event) => setNote(event.target.value)} maxLength={300} placeholder="I can upload our maths notes and homework answers…" /></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<button className="primary-button primary-button--large" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />} Send request</button></form></Modal>;
+}
+
+function AssignmentFormModal({ activeClass, user, onClose, onDone }) {
+  const [values, setValues] = useState({ title: '', subject: '', kind: 'Homework', dueDate: '', description: '' });
+  const [files, setFiles] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const update = (field) => (event) => setValues((current) => ({ ...current, [field]: event.target.value }));
+  async function submit(event) {
+    event.preventDefault(); setBusy(true); setError('');
+    try { await createAssignment(activeClass.id, user, values, files); onDone(); } catch (err) { setError(firebaseMessage(err)); setBusy(false); }
+  }
+  function chooseFiles(event) {
+    const picked = [...event.target.files];
+    const invalid = picked.find((file) => file.size > 10 * 1024 * 1024 || (!file.type.startsWith('image/') && file.type !== 'application/pdf'));
+    if (invalid) { setError('Upload images or PDFs up to 10 MB each.'); return; }
+    setFiles(picked.slice(0, 5)); setError('');
+  }
+  return <Modal title="Publish class work" eyebrow={activeClass.name} onClose={onClose} size="modal-card--wide"><form className="stack-form" onSubmit={submit}><Field label="Assignment title" icon={FileText}><input value={values.title} onChange={update('title')} placeholder="Trigonometry exercise 7.2" maxLength={100} required /></Field><div className="form-row"><Field label="Subject" icon={BookOpen}><input value={values.subject} onChange={update('subject')} placeholder="Mathematics" required /></Field><label className="plain-field"><span>Work type</span><select value={values.kind} onChange={update('kind')}><option>Homework</option><option>Classwork</option><option>Notes</option><option>Study guide</option><option>Answer key</option></select></label></div><label className="plain-field"><span>What should classmates know? <small>Optional</small></span><textarea value={values.description} onChange={update('description')} placeholder="Mention the chapter, questions covered, or anything that still needs checking." maxLength={1000} /></label><label className="upload-zone"><input type="file" accept="image/*,.pdf,application/pdf" multiple onChange={chooseFiles} /><span><Paperclip size={22} /></span><strong>{files.length ? `${files.length} file${files.length === 1 ? '' : 's'} ready` : 'Attach images or PDFs'}</strong><small>{files.length ? files.map((file) => file.name).join(', ') : 'Up to 5 files · 10 MB each'}</small></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <PenLine size={17} />} Publish work</button></div></form></Modal>;
+}
+
+function AnnouncementFormModal({ activeClass, user, onClose, onDone }) {
+  const [values, setValues] = useState({ title: '', body: '', tone: 'info', pinned: false });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const update = (field) => (event) => setValues((current) => ({ ...current, [field]: event.target.value }));
+  async function submit(event) {
+    event.preventDefault(); setBusy(true);
+    try { await createAnnouncement(activeClass.id, user, values); onDone(); } catch (err) { setError(firebaseMessage(err)); setBusy(false); }
+  }
+  return <Modal title="Post a class reminder" eyebrow={activeClass.name} onClose={onClose}><form className="stack-form" onSubmit={submit}><Field label="Headline" icon={Bell}><input value={values.title} onChange={update('title')} placeholder="Bring graph paper tomorrow" maxLength={100} required /></Field><label className="plain-field"><span>Details</span><textarea value={values.body} onChange={update('body')} placeholder="Keep it useful and specific…" maxLength={800} required /></label><label className="plain-field"><span>Style</span><select value={values.tone} onChange={update('tone')}><option value="info">General information</option><option value="urgent">Deadline or urgent</option><option value="celebrate">Good news</option></select></label><label className="check-field"><input type="checkbox" checked={values.pinned} onChange={(event) => setValues((current) => ({ ...current, pinned: event.target.checked }))} /><span><strong>Pin this reminder</strong><small>Keep it visually prominent for the class.</small></span></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Send size={17} />} Post reminder</button></div></form></Modal>;
+}
+
+function AssignmentDetail({ assignment, activeClass, user, onClose, showNotice }) {
+  const [vote, setVote] = useState(0);
+  const [working, setWorking] = useState(false);
+  const [localAssignment, setLocalAssignment] = useState(assignment);
+  useEffect(() => { getMyVote(activeClass.id, assignment.id, user.uid).then(setVote); }, [activeClass.id, assignment.id, user.uid]);
+  async function voteFor(value) {
+    if (working) return;
+    setWorking(true);
+    try {
+      const previous = vote;
+      const next = await castVote(activeClass.id, assignment.id, user.uid, value);
+      setVote(next);
+      setLocalAssignment((current) => ({ ...current, upvotes: Math.max(0, (current.upvotes || 0) - (previous === 1 ? 1 : 0) + (next === 1 ? 1 : 0)), downvotes: Math.max(0, (current.downvotes || 0) - (previous === -1 ? 1 : 0) + (next === -1 ? 1 : 0)) }));
+    } catch (error) { showNotice(firebaseMessage(error)); }
+    setWorking(false);
+  }
+  const state = verificationState(localAssignment.upvotes, localAssignment.downvotes);
+  return <Modal title={assignment.title} eyebrow={`${assignment.subject} · ${assignment.kind}`} onClose={onClose} size="modal-card--detail"><div className="assignment-detail"><section className="assignment-detail__main"><div className={`detail-verification ${state.key}`}><span>{state.key === 'verified' ? <CheckCheck size={21} /> : state.key === 'review' ? <CircleAlert size={21} /> : <Clock3 size={21} />}</span><div><strong>{state.label}</strong><p>{state.key === 'verified' ? 'At least two classmates checked this and most agree it is correct.' : state.key === 'review' ? 'Classmates found something that may need another look.' : 'Vote after checking the work to help your class.'}</p></div></div>{assignment.description && <div className="detail-description"><h3>Contributor note</h3><p>{assignment.description}</p></div>}<div className="attachment-list"><h3>Attached work</h3>{assignment.attachments?.length ? assignment.attachments.map((file) => <a href={file.url} target="_blank" rel="noreferrer" key={file.url}><span>{file.type.startsWith('image/') ? <FileImage size={19} /> : <FileText size={19} />}</span><div><strong>{file.name}</strong><small>{Math.ceil(file.size / 1024)} KB</small></div><ArrowRight size={17} /></a>) : <p className="muted-copy">No file was attached to this assignment.</p>}</div><div className="vote-box"><div><p className="eyebrow">Check the work</p><h3>Does this look correct?</h3><p>Your vote can be changed any time.</p></div><div><button className={vote === 1 ? 'active good' : ''} onClick={() => voteFor(1)} disabled={working}><ThumbsUp size={18} /><span>Correct</span><b>{localAssignment.upvotes || 0}</b></button><button className={vote === -1 ? 'active bad' : ''} onClick={() => voteFor(-1)} disabled={working}><ThumbsDown size={18} /><span>Needs review</span><b>{localAssignment.downvotes || 0}</b></button></div></div></section><aside className="assignment-detail__thread"><ThreadRoom compact assignment={assignment} activeClass={activeClass} user={user} /></aside></div></Modal>;
+}
+
+export default App;
