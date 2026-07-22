@@ -53,9 +53,14 @@ export function firebaseMessage(error) {
   const messages = {
     'auth/email-already-in-use': 'That email already has an account. Sign in instead.',
     'auth/invalid-credential': 'The email or password is incorrect.',
-    'auth/invalid-email': 'Enter a valid email address.',
+    'auth/invalid-email': 'Enter the same valid email address that received this sign-in link.',
     'auth/weak-password': 'Use at least 8 characters for your password.',
     'auth/too-many-requests': 'Too many attempts. Wait a moment and try again.',
+    'auth/invalid-action-code': 'This sign-in link has expired or was already used. Request a fresh link.',
+    'auth/unauthorized-continue-uri': 'This website is not authorized for email sign-in yet.',
+    'functions/resource-exhausted': 'A link was already sent. Wait one minute before trying again.',
+    'functions/internal': 'The email service could not send your link. Try again shortly.',
+    'functions/unavailable': 'The email service is temporarily unavailable. Try again shortly.',
     'storage/unauthorized': 'You do not have permission to upload to this class.'
   };
   return messages[code] || error?.message?.replace(/^Firebase:\s*/, '') || 'Something went wrong. Try again.';

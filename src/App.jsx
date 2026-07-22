@@ -19,7 +19,6 @@ import {
   KeyRound,
   LayoutDashboard,
   LoaderCircle,
-  LockKeyhole,
   LogOut,
   Mail,
   Menu,
@@ -30,7 +29,6 @@ import {
   Plus,
   Search,
   Send,
-  Settings,
   ShieldCheck,
   Sparkles,
   ThumbsDown,
@@ -42,16 +40,15 @@ import {
   X
 } from 'lucide-react';
 import {
-  createUserWithEmailAndPassword,
+  isSignInWithEmailLink,
   onAuthStateChanged,
-  sendEmailVerification,
-  sendPasswordResetEmail,
-  signInWithEmailAndPassword,
+  signInWithEmailLink,
   signOut,
   updateProfile
 } from 'firebase/auth';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
+import { auth, db, functions } from './firebase';
 import {
   castVote,
   createAnnouncement,
@@ -89,22 +86,93 @@ const NAV_ITEMS = [
   { id: 'inbox', label: 'Inbox', icon: Inbox }
 ];
 
+const EMAIL_LINK_KEY = 'jaji_email_for_sign_in';
+const PENDING_PROFILE_KEY = 'jaji_pending_profile';
+const sendEmailLink = httpsCallable(functions, 'sendEmailSignInLink');
+
+async function completeEmailLink(email) {
+  const credential = await signInWithEmailLink(auth, email.trim().toLowerCase(), window.location.href);
+  const pending = JSON.parse(localStorage.getItem(PENDING_PROFILE_KEY) || '{}');
+  const displayName = pending.name?.trim() || credential.user.displayName || email.split('@')[0];
+  if (credential.user.displayName !== displayName) {
+    await updateProfile(credential.user, { displayName });
+  }
+
+  const userRef = doc(db, 'users', credential.user.uid);
+  const existingProfile = await getDoc(userRef);
+  await setDoc(userRef, {
+    displayName,
+    email: credential.user.email,
+    lastSeenAt: serverTimestamp(),
+    ...(!existingProfile.exists() ? { createdAt: serverTimestamp() } : {})
+  }, { merge: true });
+
+  if (pending.code) {
+    try {
+      await joinClassroom({ ...credential.user, displayName }, pending.code);
+    } catch (error) {
+      sessionStorage.setItem('jaji_onboarding_notice', error.message);
+    }
+  }
+
+  localStorage.removeItem(EMAIL_LINK_KEY);
+  localStorage.removeItem(PENDING_PROFILE_KEY);
+  window.history.replaceState({}, document.title, window.location.pathname);
+  return { ...credential.user, displayName };
+}
+
 function App() {
   const [user, setUser] = useState(undefined);
+  const hasEmailLink = isSignInWithEmailLink(auth, window.location.href);
+  const [linkState, setLinkState] = useState(hasEmailLink ? 'completing' : 'idle');
+  const [linkError, setLinkError] = useState('');
 
-  useEffect(() => onAuthStateChanged(auth, setUser), []);
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    if (hasEmailLink) {
+      const savedEmail = localStorage.getItem(EMAIL_LINK_KEY);
+      if (!savedEmail) {
+        setLinkState('needs-email');
+      } else {
+        completeEmailLink(savedEmail)
+          .then((signedInUser) => {
+            setUser(signedInUser);
+            setLinkState('idle');
+          })
+          .catch((error) => {
+            setLinkError(firebaseMessage(error));
+            setLinkState('needs-email');
+          });
+      }
+    }
+    return unsubscribe;
+  }, [hasEmailLink]);
 
-  if (user === undefined) return <FullPageLoader />;
+  async function finishOnAnotherDevice(email) {
+    setLinkState('completing');
+    setLinkError('');
+    try {
+      const signedInUser = await completeEmailLink(email);
+      setUser(signedInUser);
+      setLinkState('idle');
+    } catch (error) {
+      setLinkError(firebaseMessage(error));
+      setLinkState('needs-email');
+    }
+  }
+
+  if (linkState === 'completing' || user === undefined) return <FullPageLoader label="Signing you in…" />;
+  if (linkState === 'needs-email') return <CompleteEmailLinkScreen error={linkError} onComplete={finishOnAnotherDevice} />;
   if (!user) return <AuthScreen />;
-  if (!user.emailVerified) return <VerifyEmailScreen user={user} />;
   return <Workspace user={user} />;
 }
 
-function FullPageLoader() {
+function FullPageLoader({ label = 'Loading Jaji…' }) {
   return (
     <div className="full-loader" aria-label="Loading Jaji">
       <BrandMark />
       <LoaderCircle className="spin" size={22} />
+      <span>{label}</span>
     </div>
   );
 }
@@ -122,8 +190,8 @@ function AuthScreen() {
   const [mode, setMode] = useState('signup');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const [showReset, setShowReset] = useState(false);
-  const [form, setForm] = useState({ name: '', email: '', password: '', code: '' });
+  const [sentTo, setSentTo] = useState('');
+  const [form, setForm] = useState({ name: '', email: '', code: '' });
 
   const update = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }));
 
@@ -132,34 +200,19 @@ function AuthScreen() {
     setBusy(true);
     setMessage('');
     try {
-      if (showReset) {
-        await sendPasswordResetEmail(auth, form.email.trim());
-        setMessage('Password reset email sent. Check your inbox.');
-        setShowReset(false);
-        return;
-      }
-      if (mode === 'login') {
-        await signInWithEmailAndPassword(auth, form.email.trim(), form.password);
-        return;
-      }
-      if (form.name.trim().length < 2) throw new Error('Enter the name your classmates will recognize.');
-      if (form.password.length < 8) throw new Error('Use at least 8 characters for your password.');
-      const credential = await createUserWithEmailAndPassword(auth, form.email.trim(), form.password);
-      await updateProfile(credential.user, { displayName: form.name.trim() });
-      await setDoc(doc(db, 'users', credential.user.uid), {
-        displayName: form.name.trim(),
-        email: credential.user.email,
-        createdAt: serverTimestamp(),
-        lastSeenAt: serverTimestamp()
+      if (mode === 'signup' && form.name.trim().length < 2) throw new Error('Enter the name your classmates will recognize.');
+      const email = form.email.trim().toLowerCase();
+      localStorage.setItem(EMAIL_LINK_KEY, email);
+      localStorage.setItem(PENDING_PROFILE_KEY, JSON.stringify({
+        name: mode === 'signup' ? form.name.trim() : '',
+        code: mode === 'signup' ? form.code.trim() : '',
+        mode
+      }));
+      await sendEmailLink({
+        email,
+        name: mode === 'signup' ? form.name.trim() : ''
       });
-      if (form.code.trim()) {
-        try {
-          await joinClassroom({ ...credential.user, displayName: form.name.trim() }, form.code);
-        } catch (error) {
-          sessionStorage.setItem('jaji_onboarding_notice', error.message);
-        }
-      }
-      await sendEmailVerification(credential.user, { url: window.location.origin });
+      setSentTo(email);
     } catch (error) {
       setMessage(firebaseMessage(error));
     } finally {
@@ -194,21 +247,27 @@ function AuthScreen() {
       <section className="auth-panel">
         <div className="auth-card">
           <div className="mobile-brand"><BrandMark /></div>
-          <p className="eyebrow">{showReset ? 'Account recovery' : mode === 'signup' ? 'Your desk is ready' : 'Welcome back'}</p>
-          <h2>{showReset ? 'Reset your password' : mode === 'signup' ? 'Create your account' : 'Sign in to Jaji'}</h2>
+          <p className="eyebrow">{sentTo ? 'Check your inbox' : mode === 'signup' ? 'Your desk is ready' : 'Welcome back'}</p>
+          <h2>{sentTo ? 'Your sign-in link is on its way' : mode === 'signup' ? 'Create your account' : 'Sign in to Jaji'}</h2>
           <p className="auth-intro">
-            {showReset ? 'We’ll send a secure reset link to your email.' : mode === 'signup' ? 'Join with a class code now, or create your own class after signup.' : 'Pick up where your class left off.'}
+            {sentTo ? <>We sent it to <strong>{sentTo}</strong>. Click the link and you’ll land in Jaji already signed in.</> : mode === 'signup' ? 'Join with a class code now, or create your own class after signup. No password needed.' : 'We’ll email you a secure link that signs you straight in.'}
           </p>
 
-          {!showReset && (
+          {!sentTo && (
             <div className="segmented" role="tablist" aria-label="Account action">
               <button className={mode === 'signup' ? 'active' : ''} onClick={() => { setMode('signup'); setMessage(''); }} type="button">Sign up</button>
               <button className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setMessage(''); }} type="button">Sign in</button>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="stack-form">
-            {mode === 'signup' && !showReset && (
+          {sentTo ? (
+            <div className="email-sent-panel">
+              <div className="mail-orbit"><Mail size={32} /><span><ArrowRight size={14} /></span></div>
+              <p>The link expires automatically. You can close this tab—clicking the email is the only step left.</p>
+              <button className="text-button" type="button" onClick={() => { setSentTo(''); setMessage(''); }}>Use a different email</button>
+            </div>
+          ) : <form onSubmit={handleSubmit} className="stack-form">
+            {mode === 'signup' && (
               <Field label="Your name" icon={Users}>
                 <input value={form.name} onChange={update('name')} autoComplete="name" placeholder="Aarav Sharma" required />
               </Field>
@@ -216,12 +275,7 @@ function AuthScreen() {
             <Field label="Email address" icon={Mail}>
               <input value={form.email} onChange={update('email')} type="email" autoComplete="email" placeholder="you@school.edu" required />
             </Field>
-            {!showReset && (
-              <Field label="Password" icon={LockKeyhole} hint={mode === 'signup' ? '8+ characters' : ''}>
-                <input value={form.password} onChange={update('password')} type="password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} placeholder="••••••••" required />
-              </Field>
-            )}
-            {mode === 'signup' && !showReset && (
+            {mode === 'signup' && (
               <Field label="Class code" icon={Hash} hint="Optional">
                 <input className="code-input" value={form.code} onChange={(event) => setForm((current) => ({ ...current, code: normalizeClassCode(event.target.value) }))} placeholder="ABC123" maxLength={6} />
               </Field>
@@ -230,17 +284,12 @@ function AuthScreen() {
             {message && <div className={message.includes('sent') ? 'form-message success' : 'form-message'}><CircleAlert size={16} /> {message}</div>}
 
             <button className="primary-button primary-button--large" disabled={busy} type="submit">
-              {busy ? <LoaderCircle className="spin" size={18} /> : showReset ? 'Send reset link' : mode === 'signup' ? 'Create my account' : 'Sign in'}
+              {busy ? <LoaderCircle className="spin" size={18} /> : mode === 'signup' ? 'Email my sign-in link' : 'Send sign-in link'}
               {!busy && <ArrowRight size={18} />}
             </button>
-          </form>
+          </form>}
 
-          {(mode === 'login' || showReset) && (
-            <button className="text-button auth-alt" type="button" onClick={() => { setShowReset((value) => !value); setMessage(''); }}>
-              {showReset ? 'Back to sign in' : 'Forgot your password?'}
-            </button>
-          )}
-          {mode === 'signup' && <p className="legal-copy">By creating an account, you agree to use Jaji respectfully and only share work you have permission to distribute.</p>}
+          {!sentTo && mode === 'signup' && <p className="legal-copy">By creating an account, you agree to use Jaji respectfully and only share work you have permission to distribute.</p>}
         </div>
       </section>
     </main>
@@ -256,44 +305,23 @@ function Field({ label, icon: Icon, hint, children }) {
   );
 }
 
-function VerifyEmailScreen({ user }) {
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState(sessionStorage.getItem('jaji_onboarding_notice') || '');
-
-  async function checkVerification() {
-    setBusy(true);
-    await user.reload();
-    if (auth.currentUser?.emailVerified) window.location.reload();
-    else setStatus('Not verified yet. Open the link in your email, then check again.');
-    setBusy(false);
-  }
-
-  async function resend() {
-    setBusy(true);
-    try {
-      await sendEmailVerification(user, { url: window.location.origin });
-      setStatus('A fresh verification email is on its way.');
-    } catch (error) {
-      setStatus(firebaseMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
+function CompleteEmailLinkScreen({ error, onComplete }) {
+  const [email, setEmail] = useState('');
   return (
     <main className="verification-shell">
       <BrandMark />
       <section className="verification-card">
         <div className="mail-orbit"><Mail size={32} /><span><Check size={14} /></span></div>
-        <p className="eyebrow">One quick check</p>
-        <h1>Verify your email</h1>
-        <p>We sent a verification link to <strong>{user.email}</strong>. This keeps classroom membership tied to a real account.</p>
-        {status && <div className="form-message"><CircleAlert size={16} /> {status}</div>}
-        <button className="primary-button primary-button--large" onClick={checkVerification} disabled={busy}>
-          {busy ? <LoaderCircle className="spin" size={18} /> : <CheckCheck size={18} />} I’ve verified my email
-        </button>
-        <button className="text-button" onClick={resend} disabled={busy}>Send another email</button>
-        <button className="text-button muted" onClick={() => signOut(auth)}>Use a different account</button>
+        <p className="eyebrow">Finish secure sign-in</p>
+        <h1>Confirm your email</h1>
+        <p>You opened this link on a different browser or device. Enter the email address the link was sent to.</p>
+        <form className="stack-form" onSubmit={(event) => { event.preventDefault(); onComplete(email); }}>
+          <Field label="Email address" icon={Mail}>
+            <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" placeholder="you@school.edu" required autoFocus />
+          </Field>
+          {error && <div className="form-message"><CircleAlert size={16} /> {error}</div>}
+          <button className="primary-button primary-button--large" type="submit">Continue to Jaji <ArrowRight size={18} /></button>
+        </form>
       </section>
     </main>
   );

@@ -1,15 +1,16 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
+import { getFunctions } from 'firebase/functions';
 import { getStorage } from 'firebase/storage';
 
 const fallbackConfig = {
-  apiKey: 'AIzaSyDdaeDjN6Rv5QEWOUGt5UOID6_w_ub9qjc',
-  authDomain: 'jaji-5a88d.firebaseapp.com',
-  projectId: 'jaji-5a88d',
-  storageBucket: 'jaji-5a88d.firebasestorage.app',
-  messagingSenderId: '980657079623',
-  appId: '1:980657079623:web:204d1d61df44069bf3b862'
+  apiKey: 'AIzaSyAJrbd4BpNDfWyIpKp3KIqTXG_2RptS1p4',
+  authDomain: 'jaji-app.firebaseapp.com',
+  projectId: 'jaji-app',
+  storageBucket: 'jaji-app.firebasestorage.app',
+  messagingSenderId: '403104440275',
+  appId: '1:403104440275:web:90b23638d558a87171d926'
 };
 
 const config = {
@@ -24,4 +25,5 @@ const config = {
 export const firebaseApp = initializeApp(config);
 export const auth = getAuth(firebaseApp);
 export const db = getFirestore(firebaseApp);
+export const functions = getFunctions(firebaseApp, 'asia-south1');
 export const storage = getStorage(firebaseApp);
