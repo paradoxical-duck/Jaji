@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { currentWeekKey, generateClassCode, isAnnouncementActive, normalizeClassCode, roleLabel, timeAgo, verificationState, xpProgress } from './utils';
+import { currentWeekKey, generateClassCode, initials, isAnnouncementActive, normalizeClassCode, roleLabel, timeAgo, verificationState, xpProgress } from './utils';
 
 describe('class codes', () => {
   it('normalizes pasted codes', () => expect(normalizeClassCode(' ab-12 c! ')).toBe('AB12C'));
@@ -17,6 +17,11 @@ describe('verification labels', () => {
 
 describe('display helpers', () => {
   it('labels roles', () => expect(roleLabel('contributor')).toBe('Contributor'));
+  it('handles missing legacy profile names', () => {
+    expect(initials(null)).toBe('?');
+    expect(initials(undefined)).toBe('?');
+    expect(initials('  Ava Patel  ')).toBe('AP');
+  });
   it('formats recent activity', () => {
     expect(timeAgo(new Date('2026-07-22T10:00:00Z'), new Date('2026-07-22T10:25:00Z'))).toBe('25m ago');
   });

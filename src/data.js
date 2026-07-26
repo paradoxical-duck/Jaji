@@ -4,6 +4,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  limit,
   onSnapshot,
   orderBy,
   query,
@@ -16,7 +17,40 @@ import {
 import { db } from './firebase';
 import { currentWeekKey, generateClassCode, normalizeClassCode } from './utils';
 
-const mapSnapshot = (snapshot) => snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+const text = (value, fallback = '') => typeof value === 'string' ? value : fallback;
+const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+const mapSnapshot = (snapshot, normalize = (item) => item) => snapshot.docs.map((item) => normalize({ id: item.id, ...item.data() }));
+
+const normalizeAssignment = (item) => ({
+  ...item,
+  title: text(item.title, 'Untitled assignment'),
+  description: text(item.description),
+  subject: text(item.subject, 'Classwork'),
+  kind: text(item.kind, 'Work'),
+  authorId: text(item.authorId),
+  authorName: text(item.authorName, 'Class member'),
+  attachments: Array.isArray(item.attachments)
+    ? item.attachments.filter((file) => file && typeof file === 'object').map((file, index) => ({
+      ...file,
+      name: text(file.name, `Attachment ${index + 1}`),
+      type: text(file.type, 'application/octet-stream'),
+      url: text(file.url),
+      size: number(file.size)
+    })).filter((file) => file.url)
+    : [],
+  upvotes: number(item.upvotes),
+  downvotes: number(item.downvotes),
+  score: number(item.score),
+  reportCount: number(item.reportCount),
+  reported: Boolean(item.reported)
+});
+
+const normalizeMessage = (item) => ({
+  ...item,
+  body: text(item.body, 'Message unavailable'),
+  authorId: text(item.authorId),
+  authorName: text(item.authorName, 'Class member')
+});
 
 async function getDocWithRetry(reference, attempts = 3) {
   let lastError;
@@ -62,6 +96,13 @@ export async function createClassroom(user, details) {
     xp: 0,
     weeklyXp: 0,
     xpWeek: currentWeekKey(),
+    monthlyXp: 0,
+    xpMonth: new Date().toISOString().slice(0, 7),
+    yearlyXp: 0,
+    xpYear: String(new Date().getUTCFullYear()),
+    streakDays: 0,
+    lastContributionDate: '',
+    equippedBadge: '',
     joinedAt: serverTimestamp()
   });
   batch.set(doc(db, 'users', user.uid, 'classrooms', classRef.id), {
@@ -88,6 +129,13 @@ export async function joinClassroom(user, rawCode) {
     xp: 0,
     weeklyXp: 0,
     xpWeek: currentWeekKey(),
+    monthlyXp: 0,
+    xpMonth: new Date().toISOString().slice(0, 7),
+    yearlyXp: 0,
+    xpYear: String(new Date().getUTCFullYear()),
+    streakDays: 0,
+    lastContributionDate: '',
+    equippedBadge: '',
     joinCode: code,
     joinedAt: serverTimestamp()
   }, { merge: true });
@@ -126,11 +174,19 @@ export function subscribeMembers(classId, onData, onError) {
 }
 
 export function subscribeAssignments(classId, onData, onError) {
-  return onSnapshot(query(collection(db, 'classrooms', classId, 'assignments'), orderBy('createdAt', 'desc')), (snapshot) => onData(mapSnapshot(snapshot)), onError);
+  return onSnapshot(query(collection(db, 'classrooms', classId, 'assignments'), orderBy('createdAt', 'desc')), (snapshot) => onData(mapSnapshot(snapshot, normalizeAssignment)), onError);
 }
 
 export function subscribeAnnouncements(classId, onData, onError) {
   return onSnapshot(query(collection(db, 'classrooms', classId, 'announcements'), orderBy('createdAt', 'desc')), (snapshot) => onData(mapSnapshot(snapshot)), onError);
+}
+
+export function subscribeSchedule(classId, onData, onError) {
+  return onSnapshot(
+    query(collection(db, 'classrooms', classId, 'schedule'), orderBy('date', 'asc')),
+    (snapshot) => onData(mapSnapshot(snapshot)),
+    onError
+  );
 }
 
 export function subscribeContributorRequests(classId, uid, isOwner, onData, onError) {
@@ -182,14 +238,32 @@ export async function removeMember(classId, uid) {
 async function awardXp(classId, uid, amount) {
   const memberRef = doc(db, 'classrooms', classId, 'members', uid);
   const week = currentWeekKey();
+  const today = new Date().toISOString().slice(0, 10);
+  const month = today.slice(0, 7);
+  const year = today.slice(0, 4);
   await runTransaction(db, async (transaction) => {
     const snapshot = await transaction.get(memberRef);
     if (!snapshot.exists()) return;
     const member = snapshot.data();
+    const yesterday = new Date(`${today}T00:00:00.000Z`);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const yesterdayKey = yesterday.toISOString().slice(0, 10);
+    const isNewDay = member.lastContributionDate !== today;
+    const streakDays = isNewDay
+      ? (member.lastContributionDate === yesterdayKey ? number(member.streakDays) + 1 : 1)
+      : number(member.streakDays);
+    const streakBonus = isNewDay ? Math.min(streakDays, 7) * 2 : 0;
+    const earned = amount + streakBonus;
     transaction.update(memberRef, {
-      xp: Math.max(0, Number(member.xp || 0) + amount),
-      weeklyXp: member.xpWeek === week ? Math.max(0, Number(member.weeklyXp || 0) + amount) : amount,
-      xpWeek: week
+      xp: Math.max(0, number(member.xp) + earned),
+      weeklyXp: member.xpWeek === week ? Math.max(0, number(member.weeklyXp) + earned) : earned,
+      xpWeek: week,
+      monthlyXp: member.xpMonth === month ? Math.max(0, number(member.monthlyXp) + earned) : earned,
+      xpMonth: month,
+      yearlyXp: member.xpYear === year ? Math.max(0, number(member.yearlyXp) + earned) : earned,
+      xpYear: year,
+      streakDays,
+      lastContributionDate: isNewDay ? today : member.lastContributionDate
     });
   });
 }
@@ -219,7 +293,8 @@ export async function removeAssignment(classId, assignmentId) {
   await deleteDoc(doc(db, 'classrooms', classId, 'assignments', assignmentId));
 }
 
-export async function castVote(classId, assignmentId, uid, value) {
+export async function castVote(classId, assignmentId, user, value) {
+  const uid = user.uid;
   const assignmentRef = doc(db, 'classrooms', classId, 'assignments', assignmentId);
   const voteRef = doc(db, 'classrooms', classId, 'assignments', assignmentId, 'votes', uid);
   return runTransaction(db, async (transaction) => {
@@ -233,6 +308,18 @@ export async function castVote(classId, assignmentId, uid, value) {
     transaction.update(assignmentRef, { upvotes, downvotes, score: upvotes - downvotes, updatedAt: serverTimestamp() });
     if (next === 0) transaction.delete(voteRef);
     else transaction.set(voteRef, { value: next, updatedAt: serverTimestamp() });
+    if (current.authorId && current.authorId !== uid && next !== 0) {
+      transaction.set(doc(db, 'classrooms', classId, 'members', current.authorId, 'notifications', `vote-${assignmentId}-${uid}`), {
+        type: 'feedback',
+        assignmentId,
+        assignmentTitle: text(current.title, 'Your assignment'),
+        recipientId: current.authorId,
+        senderId: uid,
+        senderName: text(user.displayName, 'A classmate'),
+        body: next === 1 ? 'marked your work as correct.' : 'said your work needs another look.',
+        createdAt: serverTimestamp()
+      });
+    }
     return next;
   });
 }
@@ -243,20 +330,102 @@ export async function getMyVote(classId, assignmentId, uid) {
 }
 
 export function subscribeMessages(classId, assignmentId, onData, onError) {
-  return onSnapshot(query(collection(db, 'classrooms', classId, 'assignments', assignmentId, 'messages'), orderBy('createdAt', 'asc')), (snapshot) => onData(mapSnapshot(snapshot)), onError);
+  const source = query(
+    collection(db, 'classrooms', classId, 'assignments', assignmentId, 'messages'),
+    orderBy('createdAt', 'desc'),
+    limit(150)
+  );
+  return onSnapshot(source, (snapshot) => onData(mapSnapshot(snapshot, normalizeMessage).reverse()), onError);
 }
 
 export async function sendMessage(classId, assignmentId, user, body) {
-  await addDoc(collection(db, 'classrooms', classId, 'assignments', assignmentId, 'messages'), {
+  const assignmentRef = doc(db, 'classrooms', classId, 'assignments', assignmentId);
+  const assignmentSnap = await getDoc(assignmentRef);
+  const assignment = assignmentSnap.data() || {};
+  const batch = writeBatch(db);
+  const messageRef = doc(collection(db, 'classrooms', classId, 'assignments', assignmentId, 'messages'));
+  batch.set(messageRef, {
     body: body.trim(),
     authorId: user.uid,
     authorName: user.displayName,
     createdAt: serverTimestamp()
   });
+  if (assignment.authorId && assignment.authorId !== user.uid) {
+    batch.set(doc(collection(db, 'classrooms', classId, 'members', assignment.authorId, 'notifications')), {
+      type: 'feedback',
+      assignmentId,
+      assignmentTitle: text(assignment.title, 'Your assignment'),
+      recipientId: assignment.authorId,
+      senderId: user.uid,
+      senderName: text(user.displayName, 'A classmate'),
+      body: 'replied in your assignment thread.',
+      createdAt: serverTimestamp()
+    });
+  }
+  await batch.commit();
 }
 
 export async function removeMessage(classId, assignmentId, messageId) {
   await deleteDoc(doc(db, 'classrooms', classId, 'assignments', assignmentId, 'messages', messageId));
+}
+
+export async function reportAssignment(classId, assignment, user, reason) {
+  const assignmentRef = doc(db, 'classrooms', classId, 'assignments', assignment.id);
+  const reportRef = doc(db, 'classrooms', classId, 'assignments', assignment.id, 'reports', user.uid);
+  await runTransaction(db, async (transaction) => {
+    const [assignmentSnap, reportSnap] = await Promise.all([transaction.get(assignmentRef), transaction.get(reportRef)]);
+    if (!assignmentSnap.exists()) throw new Error('This assignment is no longer available.');
+    if (reportSnap.exists()) throw new Error('You already reported this work.');
+    const current = assignmentSnap.data();
+    transaction.set(reportRef, {
+      reporterId: user.uid,
+      reporterName: text(user.displayName, 'Class member'),
+      reason: text(reason, 'Something is seriously wrong with this upload.'),
+      createdAt: serverTimestamp()
+    });
+    transaction.update(assignmentRef, {
+      reportCount: number(current.reportCount) + 1,
+      reported: true,
+      updatedAt: serverTimestamp()
+    });
+    if (current.authorId && current.authorId !== user.uid) {
+      transaction.set(doc(collection(db, 'classrooms', classId, 'members', current.authorId, 'notifications')), {
+        type: 'report',
+        assignmentId: assignment.id,
+        assignmentTitle: text(current.title, 'Your assignment'),
+        recipientId: current.authorId,
+        senderId: user.uid,
+        senderName: text(user.displayName, 'A classmate'),
+        body: 'reported a serious problem with your uploaded work.',
+        createdAt: serverTimestamp()
+      });
+    }
+  });
+}
+
+export function subscribeNotifications(classId, uid, onData, onError) {
+  return onSnapshot(
+    query(collection(db, 'classrooms', classId, 'members', uid, 'notifications'), orderBy('createdAt', 'desc'), limit(100)),
+    (snapshot) => onData(mapSnapshot(snapshot)),
+    onError
+  );
+}
+
+export async function updateUserProfile(user, classIds, values) {
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'users', user.uid), {
+    displayName: values.displayName,
+    photoURL: values.photoURL || '',
+    updatedAt: serverTimestamp()
+  }, { merge: true });
+  classIds.forEach((classId) => {
+    batch.set(doc(db, 'classrooms', classId, 'members', user.uid), {
+      name: values.displayName,
+      photoURL: values.photoURL || '',
+      equippedBadge: values.equippedBadge || ''
+    }, { merge: true });
+  });
+  await batch.commit();
 }
 
 export async function createAnnouncement(classId, user, values) {
@@ -276,6 +445,25 @@ export async function createAnnouncement(classId, user, values) {
 
 export async function removeAnnouncement(classId, announcementId) {
   await deleteDoc(doc(db, 'classrooms', classId, 'announcements', announcementId));
+}
+
+export async function createScheduleEvent(classId, user, values) {
+  await addDoc(collection(db, 'classrooms', classId, 'schedule'), {
+    title: values.title.trim(),
+    details: values.details.trim(),
+    date: values.date,
+    startTime: values.startTime || '',
+    endTime: values.endTime || '',
+    type: values.type,
+    authorId: user.uid,
+    authorName: user.displayName,
+    createdAt: serverTimestamp()
+  });
+  await awardXp(classId, user.uid, 5).catch(() => {});
+}
+
+export async function removeScheduleEvent(classId, eventId) {
+  await deleteDoc(doc(db, 'classrooms', classId, 'schedule', eventId));
 }
 
 export async function leaveClassroom(classId, uid) {

@@ -52,11 +52,21 @@ service cloud.firestore {
         allow update: if isOwner(classId) || (
           isSelf(uid)
           && request.resource.data.role == resource.data.role
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['xp', 'weeklyXp', 'xpWeek'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'xp', 'weeklyXp', 'xpWeek', 'monthlyXp', 'xpMonth', 'yearlyXp', 'xpYear',
+            'streakDays', 'lastContributionDate', 'name', 'photoURL', 'equippedBadge'
+          ])
           && request.resource.data.xp >= 0
           && request.resource.data.weeklyXp >= 0
         );
         allow delete: if isOwner(classId) || isSelf(uid);
+
+        match /notifications/{notificationId} {
+          allow read, delete: if isSelf(uid);
+          allow create: if isMember(classId)
+            && request.resource.data.recipientId == uid
+            && request.resource.data.senderId == request.auth.uid;
+        }
       }
 
       match /contributorRequests/{uid} {
@@ -72,9 +82,15 @@ service cloud.firestore {
         allow delete: if isOwner(classId) || (isContributor(classId) && resource.data.authorId == request.auth.uid);
         allow update: if isContributor(classId) || (
           isMember(classId)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['upvotes', 'downvotes', 'score', 'updatedAt'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'upvotes', 'downvotes', 'score', 'reportCount', 'reported', 'updatedAt'
+          ])
           && request.resource.data.upvotes >= 0
           && request.resource.data.downvotes >= 0
+          && (
+            !request.resource.data.diff(resource.data).affectedKeys().hasAny(['reportCount'])
+            || request.resource.data.reportCount >= 0
+          )
         );
 
         match /votes/{uid} {
@@ -89,9 +105,22 @@ service cloud.firestore {
           allow create: if isMember(classId) && request.resource.data.authorId == request.auth.uid;
           allow update, delete: if isOwner(classId) || (signedIn() && resource.data.authorId == request.auth.uid);
         }
+
+        match /reports/{uid} {
+          allow read: if isMember(classId);
+          allow create: if isSelf(uid) && isMember(classId)
+            && request.resource.data.reporterId == request.auth.uid;
+          allow delete: if isOwner(classId) || isSelf(uid);
+        }
       }
 
       match /announcements/{announcementId} {
+        allow read: if isMember(classId);
+        allow create: if isContributor(classId) && request.resource.data.authorId == request.auth.uid;
+        allow update, delete: if isOwner(classId) || (isContributor(classId) && resource.data.authorId == request.auth.uid);
+      }
+
+      match /schedule/{eventId} {
         allow read: if isMember(classId);
         allow create: if isContributor(classId) && request.resource.data.authorId == request.auth.uid;
         allow update, delete: if isOwner(classId) || (isContributor(classId) && resource.data.authorId == request.auth.uid);

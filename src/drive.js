@@ -124,3 +124,10 @@ export async function uploadAssignmentFiles(classroom, files) {
   for (const file of files) attachments.push(await uploadFile(token, folderId, file));
   return attachments;
 }
+
+export async function uploadProfilePhoto(file) {
+  const token = await getAccessToken();
+  const folderId = await getOrCreateClassFolder(token, { id: 'profiles', name: 'Profile photos' });
+  const uploaded = await uploadFile(token, folderId, file);
+  return `https://drive.google.com/thumbnail?id=${encodeURIComponent(uploaded.driveFileId)}&sz=w400`;
+}
