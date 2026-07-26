@@ -36,6 +36,43 @@ export function roleLabel(role) {
   return { owner: 'Class creator', contributor: 'Contributor', member: 'Member' }[role] || 'Member';
 }
 
+export const XP_LEVELS = [
+  { key: 'bronze', name: 'Bronze', min: 0, next: 50 },
+  { key: 'silver', name: 'Silver', min: 50, next: 150 },
+  { key: 'gold', name: 'Gold', min: 150, next: 350 },
+  { key: 'platinum', name: 'Platinum', min: 350, next: 700 },
+  { key: 'diamond', name: 'Diamond', min: 700, next: null }
+];
+
+export function xpLevel(xp = 0) {
+  return [...XP_LEVELS].reverse().find((level) => xp >= level.min) || XP_LEVELS[0];
+}
+
+export function xpProgress(xp = 0) {
+  const level = xpLevel(xp);
+  if (!level.next) return { level, percent: 100, remaining: 0 };
+  const span = level.next - level.min;
+  const earned = Math.max(0, xp - level.min);
+  return {
+    level,
+    percent: Math.min(100, Math.round((earned / span) * 100)),
+    remaining: Math.max(0, level.next - xp)
+  };
+}
+
+export function currentWeekKey(date = new Date()) {
+  const value = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = value.getUTCDay() || 7;
+  value.setUTCDate(value.getUTCDate() - day + 1);
+  return value.toISOString().slice(0, 10);
+}
+
+export function isAnnouncementActive(announcement, now = new Date()) {
+  if (!announcement?.expiresOn) return true;
+  const end = new Date(`${announcement.expiresOn}T23:59:59.999`);
+  return !Number.isNaN(end.getTime()) && end >= now;
+}
+
 export function verificationState(upvotes = 0, downvotes = 0) {
   const total = upvotes + downvotes;
   const ratio = total ? upvotes / total : 0;
@@ -55,6 +92,9 @@ export function firebaseMessage(error) {
     'auth/invalid-credential': 'The email or password is incorrect.',
     'auth/invalid-email': 'Enter the same valid email address that received this sign-in link.',
     'auth/weak-password': 'Use at least 8 characters for your password.',
+    'auth/operation-not-allowed': 'Password sign-in is not enabled yet. Try again shortly.',
+    'auth/user-not-found': 'The email or password is incorrect.',
+    'auth/wrong-password': 'The email or password is incorrect.',
     'auth/too-many-requests': 'Too many attempts. Wait a moment and try again.',
     'auth/invalid-action-code': 'This sign-in link has expired or was already used. Request a fresh link.',
     'auth/unauthorized-continue-uri': 'This website is not authorized for email sign-in yet.',

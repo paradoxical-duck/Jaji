@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   ArrowRight,
@@ -31,6 +31,7 @@ import {
   Send,
   ShieldCheck,
   Sparkles,
+  Trophy,
   ThumbsDown,
   ThumbsUp,
   Trash2,
@@ -40,8 +41,10 @@ import {
   X
 } from 'lucide-react';
 import {
+  createUserWithEmailAndPassword,
   isSignInWithEmailLink,
   onAuthStateChanged,
+  signInWithEmailAndPassword,
   signInWithEmailLink,
   signOut,
   updateProfile
@@ -55,7 +58,10 @@ import {
   createClassroom,
   getMyVote,
   joinClassroom,
+  removeAssignment,
   removeAnnouncement,
+  removeMember,
+  removeMessage,
   requestContributor,
   reviewContributorRequest,
   sendMessage,
@@ -65,16 +71,20 @@ import {
   subscribeMember,
   subscribeMembers,
   subscribeMessages,
-  subscribeUserClassrooms
+  subscribeUserClassrooms,
+  updateMemberRole
 } from './data';
 import { uploadAssignmentFiles } from './drive';
 import {
   firebaseMessage,
   initials,
+  isAnnouncementActive,
   normalizeClassCode,
   roleLabel,
   timeAgo,
-  verificationState
+  verificationState,
+  currentWeekKey,
+  xpProgress
 } from './utils';
 
 const NAV_ITEMS = [
@@ -83,17 +93,19 @@ const NAV_ITEMS = [
   { id: 'threads', label: 'Threads', icon: MessageCircle },
   { id: 'reminders', label: 'Reminders', icon: Bell },
   { id: 'people', label: 'People', icon: Users },
+  { id: 'leaderboard', label: 'Leaderboard', icon: Trophy },
   { id: 'inbox', label: 'Inbox', icon: Inbox }
 ];
 
 const EMAIL_LINK_KEY = 'jaji_email_for_sign_in';
 const PENDING_PROFILE_KEY = 'jaji_pending_profile';
+const AWAITING_2FA_KEY = 'jaji_awaiting_2fa';
 const AUTH_EMAIL_ENDPOINT = import.meta.env.VITE_AUTH_EMAIL_ENDPOINT || 'https://jaji-auth.netlify.app/.netlify/functions/send-email-sign-in-link';
 
-async function sendEmailLink(payload) {
+async function sendEmailLink(payload, idToken) {
   const response = await fetch(AUTH_EMAIL_ENDPOINT, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
     body: JSON.stringify(payload)
   });
   const result = await response.json().catch(() => ({}));
@@ -132,14 +144,19 @@ async function completeEmailLink(email) {
   return { ...credential.user, displayName };
 }
 
-function App() {
+function AppContent() {
   const [user, setUser] = useState(undefined);
   const hasEmailLink = isSignInWithEmailLink(auth, window.location.href);
   const [linkState, setLinkState] = useState(hasEmailLink ? 'completing' : 'idle');
   const [linkError, setLinkError] = useState('');
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
+      const startedAt = Number(sessionStorage.getItem(AWAITING_2FA_KEY) || 0);
+      const activelyVerifying = startedAt && Date.now() - startedAt < 120_000;
+      if (startedAt && !activelyVerifying) sessionStorage.removeItem(AWAITING_2FA_KEY);
+      setUser(activelyVerifying ? null : nextUser);
+    });
     if (hasEmailLink) {
       const savedEmail = localStorage.getItem(EMAIL_LINK_KEY);
       if (!savedEmail) {
@@ -178,6 +195,29 @@ function App() {
   return <Workspace user={user} />;
 }
 
+class AppErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error) {
+    console.error('Jaji recovered from a render error', error);
+  }
+  render() {
+    if (this.state.failed) {
+      return <LoadFailure message="A part of Jaji stopped responding." onRetry={() => window.location.reload()} />;
+    }
+    return this.props.children;
+  }
+}
+
+function App() {
+  return <AppErrorBoundary><AppContent /></AppErrorBoundary>;
+}
+
 function FullPageLoader({ label = 'Loading Jaji…' }) {
   return (
     <div className="full-loader" aria-label="Loading Jaji">
@@ -202,7 +242,7 @@ function AuthScreen() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [sentTo, setSentTo] = useState('');
-  const [form, setForm] = useState({ name: '', email: '', code: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', code: '' });
 
   const update = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }));
 
@@ -212,19 +252,30 @@ function AuthScreen() {
     setMessage('');
     try {
       if (mode === 'signup' && form.name.trim().length < 2) throw new Error('Enter the name your classmates will recognize.');
+      if (form.password.length < 8) throw new Error('Use at least 8 characters for your password.');
       const email = form.email.trim().toLowerCase();
+      sessionStorage.setItem(AWAITING_2FA_KEY, String(Date.now()));
       localStorage.setItem(EMAIL_LINK_KEY, email);
       localStorage.setItem(PENDING_PROFILE_KEY, JSON.stringify({
         name: mode === 'signup' ? form.name.trim() : '',
         code: mode === 'signup' ? form.code.trim() : '',
         mode
       }));
+      const credential = mode === 'signup'
+        ? await createUserWithEmailAndPassword(auth, email, form.password)
+        : await signInWithEmailAndPassword(auth, email, form.password);
+      if (mode === 'signup') await updateProfile(credential.user, { displayName: form.name.trim() });
+      const idToken = await credential.user.getIdToken();
       await sendEmailLink({
         email,
         name: mode === 'signup' ? form.name.trim() : ''
-      });
+      }, idToken);
+      await signOut(auth);
+      sessionStorage.removeItem(AWAITING_2FA_KEY);
       setSentTo(email);
     } catch (error) {
+      if (auth.currentUser) await signOut(auth).catch(() => {});
+      sessionStorage.removeItem(AWAITING_2FA_KEY);
       setMessage(firebaseMessage(error));
     } finally {
       setBusy(false);
@@ -261,7 +312,7 @@ function AuthScreen() {
           <p className="eyebrow">{sentTo ? 'Check your inbox' : mode === 'signup' ? 'Your desk is ready' : 'Welcome back'}</p>
           <h2>{sentTo ? 'Your sign-in link is on its way' : mode === 'signup' ? 'Create your account' : 'Sign in to Jaji'}</h2>
           <p className="auth-intro">
-            {sentTo ? <>We sent it to <strong>{sentTo}</strong>. Click the link and you’ll land in Jaji already signed in.</> : mode === 'signup' ? 'Join with a class code now, or create your own class after signup. No password needed.' : 'We’ll email you a secure link that signs you straight in.'}
+            {sentTo ? <>We sent it to <strong>{sentTo}</strong>. Click the link and you’ll land in Jaji already signed in.</> : mode === 'signup' ? 'Create a password, then confirm the email we send. The link signs you straight in.' : 'Enter your password, then use the email link as your second sign-in step.'}
           </p>
 
           {!sentTo && (
@@ -286,6 +337,9 @@ function AuthScreen() {
             <Field label="Email address" icon={Mail}>
               <input value={form.email} onChange={update('email')} type="email" autoComplete="email" placeholder="you@school.edu" required />
             </Field>
+            <Field label="Password" icon={KeyRound}>
+              <input value={form.password} onChange={update('password')} type="password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} placeholder="At least 8 characters" minLength={8} required />
+            </Field>
             {mode === 'signup' && (
               <Field label="Class code" icon={Hash} hint="Optional">
                 <input className="code-input" value={form.code} onChange={(event) => setForm((current) => ({ ...current, code: normalizeClassCode(event.target.value) }))} placeholder="ABC123" maxLength={6} />
@@ -295,7 +349,7 @@ function AuthScreen() {
             {message && <div className={message.includes('sent') ? 'form-message success' : 'form-message'}><CircleAlert size={16} /> {message}</div>}
 
             <button className="primary-button primary-button--large" disabled={busy} type="submit">
-              {busy ? <LoaderCircle className="spin" size={18} /> : mode === 'signup' ? 'Email my sign-in link' : 'Send sign-in link'}
+              {busy ? <LoaderCircle className="spin" size={18} /> : mode === 'signup' ? 'Create account & email code' : 'Continue with email verification'}
               {!busy && <ArrowRight size={18} />}
             </button>
           </form>}
@@ -354,6 +408,8 @@ function Workspace({ user }) {
   const [modal, setModal] = useState(null);
   const [selectedAssignment, setSelectedAssignment] = useState(null);
   const [toast, setToast] = useState('');
+  const readKey = `jaji_read_items_${user.uid}_${selectedClassId}`;
+  const [readIds, setReadIds] = useState(() => new Set());
 
   const activeClass = classes.find((item) => item.id === selectedClassId) || null;
   const isContributor = ['owner', 'contributor'].includes(membership?.role);
@@ -396,6 +452,14 @@ function Workspace({ user }) {
   }, [selectedClassId, user.uid]);
 
   useEffect(() => {
+    try {
+      setReadIds(new Set(JSON.parse(localStorage.getItem(readKey) || '[]')));
+    } catch {
+      setReadIds(new Set());
+    }
+  }, [readKey]);
+
+  useEffect(() => {
     if (!selectedClassId || !membership) return undefined;
     return subscribeContributorRequests(selectedClassId, user.uid, membership.role === 'owner', setRequests, (error) => setToast(firebaseMessage(error)));
   }, [selectedClassId, user.uid, membership]);
@@ -406,10 +470,33 @@ function Workspace({ user }) {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const readKey = `jaji_read_${user.uid}_${selectedClassId}`;
-  const readAt = Number(localStorage.getItem(readKey) || 0);
-  const inboxItems = useMemo(() => buildInbox(assignments, announcements, requests, isOwner), [assignments, announcements, requests, isOwner]);
-  const unreadCount = inboxItems.filter((item) => item.date?.getTime() > readAt).length;
+  const activeAnnouncements = useMemo(() => announcements.filter((item) => isAnnouncementActive(item)), [announcements]);
+  const inboxItems = useMemo(
+    () => buildInbox(assignments, activeAnnouncements, requests, isOwner, user.uid),
+    [assignments, activeAnnouncements, requests, isOwner, user.uid]
+  );
+  const unreadCount = inboxItems.filter((item) => !readIds.has(item.id)).length;
+
+  function markRead(id) {
+    setReadIds((current) => {
+      const next = new Set(current);
+      next.add(id);
+      localStorage.setItem(readKey, JSON.stringify([...next]));
+      return next;
+    });
+  }
+
+  function markAllRead() {
+    const next = new Set(inboxItems.map((item) => item.id));
+    setReadIds(next);
+    localStorage.setItem(readKey, JSON.stringify([...next]));
+    setToast('Inbox marked as read.');
+  }
+
+  function openAssignment(assignment) {
+    markRead(`assignment-${assignment.id}`);
+    setSelectedAssignment(assignment);
+  }
 
   function selectClass(classId) {
     setSelectedClassId(classId);
@@ -433,7 +520,7 @@ function Workspace({ user }) {
   }
   if (!activeClass) return <FullPageLoader />;
 
-  const pageProps = { activeClass, membership, members, assignments, announcements, requests, user, isContributor, isOwner, setModal, setPage, setSelectedAssignment, showNotice };
+  const pageProps = { activeClass, membership, members, assignments, announcements: activeAnnouncements, requests, user, isContributor, isOwner, setModal, setPage, setSelectedAssignment: openAssignment, showNotice };
 
   return (
     <div className="workspace">
@@ -482,7 +569,8 @@ function Workspace({ user }) {
           {page === 'threads' && <ThreadsPage {...pageProps} />}
           {page === 'reminders' && <RemindersPage {...pageProps} />}
           {page === 'people' && <PeoplePage {...pageProps} />}
-          {page === 'inbox' && <InboxPage items={inboxItems} readAt={readAt} onReadAll={() => { localStorage.setItem(readKey, String(Date.now())); setToast('Inbox marked as read.'); setPage('inbox'); }} onOpen={(item) => { if (item.assignment) setSelectedAssignment(item.assignment); else if (item.type === 'request') setPage('people'); else setPage('reminders'); }} />}
+          {page === 'leaderboard' && <LeaderboardPage members={members} />}
+          {page === 'inbox' && <InboxPage items={inboxItems} readIds={readIds} onRead={markRead} onReadAll={markAllRead} onOpen={(item) => { markRead(item.id); if (item.assignment) openAssignment(item.assignment); else if (item.type === 'request') setPage('people'); else setPage('reminders'); }} />}
         </main>
       </div>
 
@@ -490,7 +578,7 @@ function Workspace({ user }) {
       {modal === 'assignment' && <AssignmentFormModal activeClass={activeClass} user={user} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Assignment published to your class.'); }} />}
       {modal === 'announcement' && <AnnouncementFormModal activeClass={activeClass} user={user} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Reminder posted to the class.'); }} />}
       {modal === 'contributor' && <ContributorRequestModal activeClass={activeClass} user={user} existing={requests[0]} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Request sent to the class creator.'); }} />}
-      {selectedAssignment && <AssignmentDetail assignment={selectedAssignment} activeClass={activeClass} user={user} onClose={() => setSelectedAssignment(null)} showNotice={showNotice} />}
+      {selectedAssignment && <AssignmentDetail assignment={selectedAssignment} activeClass={activeClass} user={user} isOwner={isOwner} onClose={() => setSelectedAssignment(null)} onDeleted={() => setSelectedAssignment(null)} showNotice={showNotice} />}
       {toast && <div className="toast" role="status"><Check size={17} />{toast}</div>}
     </div>
   );
@@ -594,6 +682,7 @@ function Dashboard(props) {
         </div>
 
         <aside className="dashboard-rail">
+          {isContributor && <XpProgressCard member={membership} onLeaderboard={() => setPage('leaderboard')} />}
           <div className="rail-card class-pass">
             <div className="rail-card__heading"><div><span>Class pass</span><strong>{activeClass.name}</strong></div><KeyRound size={20} /></div>
             <p>Share this code with classmates you want to invite.</p>
@@ -608,7 +697,7 @@ function Dashboard(props) {
           <div className="rail-card roster-peek">
             <div className="rail-title"><strong>People here</strong><button onClick={() => setPage('people')}>See all</button></div>
             <div className="avatar-stack">{members.slice(0, 5).map((member) => <Avatar key={member.id} name={member.name} title={member.name} />)}{members.length > 5 && <span>+{members.length - 5}</span>}</div>
-            <p>{members.filter((member) => member.role === 'contributor').length + 1} people can publish work and reminders.</p>
+            <p>{members.filter((member) => ['owner', 'contributor'].includes(member.role)).length} people can publish work and reminders.</p>
           </div>
         </aside>
       </div>
@@ -621,7 +710,11 @@ function AssignmentsPage({ assignments, isContributor, setModal, setSelectedAssi
   const [sort, setSort] = useState('top');
   const visible = useMemo(() => {
     const filtered = assignments.filter((item) => `${item.title} ${item.subject} ${item.authorName}`.toLowerCase().includes(search.toLowerCase()));
-    return [...filtered].sort((a, b) => sort === 'top' ? (b.score || 0) - (a.score || 0) : (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+    return [...filtered].sort((a, b) => {
+      if (sort === 'top') return (b.score || 0) - (a.score || 0);
+      const difference = (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
+      return sort === 'old' ? -difference : difference;
+    });
   }, [assignments, search, sort]);
   return (
     <div className="page-enter">
@@ -630,7 +723,7 @@ function AssignmentsPage({ assignments, isContributor, setModal, setSelectedAssi
       </PageHeading>
       <div className="toolbar">
         <label className="search-control"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title, subject, or contributor" /></label>
-        <div className="sort-control"><button className={sort === 'top' ? 'active' : ''} onClick={() => setSort('top')}>Top verified</button><button className={sort === 'new' ? 'active' : ''} onClick={() => setSort('new')}>Newest</button></div>
+        <div className="sort-control"><button className={sort === 'top' ? 'active' : ''} onClick={() => setSort('top')}>Top verified</button><button className={sort === 'new' ? 'active' : ''} onClick={() => setSort('new')}>Newest</button><button className={sort === 'old' ? 'active' : ''} onClick={() => setSort('old')}>Oldest</button></div>
       </div>
       {visible.length ? <div className="assignment-grid assignment-grid--wide">{visible.map((assignment, index) => <AssignmentCard key={assignment.id} assignment={assignment} rank={sort === 'top' ? index + 1 : null} onOpen={() => setSelectedAssignment(assignment)} />)}</div> : <EmptyState icon={Archive} title="No assignments match" body="Try a different search, or publish new class work." />}
     </div>
@@ -657,7 +750,7 @@ function AssignmentCard({ assignment, rank, onOpen }) {
   );
 }
 
-function ThreadsPage({ assignments, activeClass, user, setSelectedAssignment }) {
+function ThreadsPage({ assignments, activeClass, user, isOwner, setSelectedAssignment, showNotice }) {
   const [active, setActive] = useState(assignments[0] || null);
   useEffect(() => {
     if (active && !assignments.some((item) => item.id === active.id)) setActive(assignments[0] || null);
@@ -672,14 +765,14 @@ function ThreadsPage({ assignments, activeClass, user, setSelectedAssignment }) 
             <div className="thread-list__label">Choose a discussion</div>
             {assignments.map((item) => <button key={item.id} className={active?.id === item.id ? 'active' : ''} onClick={() => setActive(item)}><span className="thread-file"><FileText size={18} /></span><div><strong>{item.title}</strong><small>{item.subject} · by {item.authorName}</small></div><ChevronDown size={16} /></button>)}
           </div>
-          <ThreadRoom assignment={active} activeClass={activeClass} user={user} onOpenWork={() => setSelectedAssignment(active)} />
+          <ThreadRoom assignment={active} activeClass={activeClass} user={user} isOwner={isOwner} showNotice={showNotice} onOpenWork={() => setSelectedAssignment(active)} />
         </div>
       ) : <EmptyState icon={MessageCircle} title="Threads begin with an assignment" body="Once a contributor publishes work, everyone in class can discuss it here." />}
     </div>
   );
 }
 
-function ThreadRoom({ assignment, activeClass, user, onOpenWork, compact = false }) {
+function ThreadRoom({ assignment, activeClass, user, isOwner = false, showNotice = () => {}, onOpenWork, compact = false }) {
   const [messages, setMessages] = useState([]);
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
@@ -695,13 +788,22 @@ function ThreadRoom({ assignment, activeClass, user, onOpenWork, compact = false
     setBusy(true);
     try { await sendMessage(activeClass.id, assignment.id, user, body); setBody(''); } finally { setBusy(false); }
   }
+  async function deleteMessage(message) {
+    if (!window.confirm('Delete this message?')) return;
+    try {
+      await removeMessage(activeClass.id, assignment.id, message.id);
+      showNotice('Message deleted.');
+    } catch (error) {
+      showNotice(firebaseMessage(error));
+    }
+  }
   if (!assignment) return null;
   return (
     <section className={`thread-room ${compact ? 'thread-room--compact' : ''}`}>
       <header><div><span>Discussion</span><strong>{assignment.title}</strong></div>{onOpenWork && <button className="text-button" onClick={onOpenWork}>View work <ArrowRight size={15} /></button>}</header>
       <div className="message-stream">
         {!messages.length && <div className="thread-empty"><MessageCircle size={24} /><strong>Start the conversation</strong><p>Ask a question, explain a step, or flag something that needs another look.</p></div>}
-        {messages.map((message) => <div className={`message ${message.authorId === user.uid ? 'message--mine' : ''}`} key={message.id}><Avatar name={message.authorName} small /><div><span><strong>{message.authorName}</strong><time>{timeAgo(message.createdAt)}</time></span><p>{message.body}</p></div></div>)}
+        {messages.map((message) => <div className={`message ${message.authorId === user.uid ? 'message--mine' : ''}`} key={message.id}><Avatar name={message.authorName} small /><div><span><strong>{message.authorName}</strong><time>{timeAgo(message.createdAt)}</time>{(isOwner || message.authorId === user.uid) && <button className="message-delete" onClick={() => deleteMessage(message)} aria-label={`Delete message from ${message.authorName}`}><Trash2 size={13} /></button>}</span><p>{message.body}</p></div></div>)}
         <div ref={bottomRef} />
       </div>
       <form className="message-composer" onSubmit={submit}><Avatar name={user.displayName} small /><input value={body} onChange={(event) => setBody(event.target.value)} placeholder="Write a helpful reply…" maxLength={800} /><button disabled={busy || !body.trim()} aria-label="Send reply">{busy ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button></form>
@@ -709,7 +811,7 @@ function ThreadRoom({ assignment, activeClass, user, onOpenWork, compact = false
   );
 }
 
-function RemindersPage({ announcements, isContributor, isOwner, activeClass, setModal, showNotice }) {
+function RemindersPage({ announcements, isContributor, isOwner, activeClass, user, setModal, showNotice }) {
   async function remove(item) {
     if (!window.confirm(`Remove “${item.title}”?`)) return;
     try { await removeAnnouncement(activeClass.id, item.id); showNotice('Reminder removed.'); } catch (error) { showNotice(firebaseMessage(error)); }
@@ -719,12 +821,13 @@ function RemindersPage({ announcements, isContributor, isOwner, activeClass, set
       <PageHeading eyebrow="Class-wide notices" title="Reminders" body="Announcements from your class creator and contributors, kept clear of assignment discussions.">
         {isContributor && <button className="primary-button" onClick={() => setModal('announcement')}><Plus size={17} /> Post reminder</button>}
       </PageHeading>
-      {announcements.length ? <div className="reminder-list">{announcements.map((item) => <article className={`reminder-card tone-${item.tone || 'info'}`} key={item.id}><span className="reminder-card__icon">{item.tone === 'urgent' ? <CircleAlert size={21} /> : item.tone === 'celebrate' ? <Sparkles size={21} /> : <Bell size={21} />}</span><div><div className="reminder-meta"><span>{item.pinned && 'PINNED · '}{timeAgo(item.createdAt)}</span>{(isOwner) && <button className="icon-button" onClick={() => remove(item)} aria-label="Remove reminder"><Trash2 size={16} /></button>}</div><h3>{item.title}</h3><p>{item.body}</p><small>Posted by {item.authorName}</small></div></article>)}</div> : <EmptyState icon={Bell} title="No reminders right now" body={isContributor ? 'Post a class-wide reminder for deadlines, materials, or a change of plan.' : 'Class-wide announcements will appear here.'} action={isContributor ? 'Post a reminder' : null} onAction={() => setModal('announcement')} />}
+      {announcements.length ? <div className="reminder-list">{announcements.map((item) => <article className={`reminder-card tone-${item.tone || 'info'}`} key={item.id}><span className="reminder-card__icon">{item.tone === 'urgent' ? <CircleAlert size={21} /> : item.tone === 'celebrate' ? <Sparkles size={21} /> : <Bell size={21} />}</span><div><div className="reminder-meta"><span>{item.pinned && 'PINNED · '}{timeAgo(item.createdAt)}{item.expiresOn && ` · through ${new Date(`${item.expiresOn}T12:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`}</span>{(isOwner || item.authorId === user.uid) && <button className="icon-button" onClick={() => remove(item)} aria-label="Remove reminder"><Trash2 size={16} /></button>}</div><h3>{item.title}</h3><p>{item.body}</p><small>Posted by {item.authorName}</small></div></article>)}</div> : <EmptyState icon={Bell} title="No reminders right now" body={isContributor ? 'Post a class-wide reminder for deadlines, materials, or a change of plan.' : 'Class-wide announcements will appear here.'} action={isContributor ? 'Post a reminder' : null} onAction={() => setModal('announcement')} />}
     </div>
   );
 }
 
-function PeoplePage({ members, requests, isOwner, activeClass, showNotice }) {
+function PeoplePage({ members, requests, isOwner, activeClass, user, showNotice }) {
+  const [menuFor, setMenuFor] = useState('');
   const groups = [
     ['Class creator', members.filter((item) => item.role === 'owner')],
     ['Contributors', members.filter((item) => item.role === 'contributor')],
@@ -733,17 +836,32 @@ function PeoplePage({ members, requests, isOwner, activeClass, showNotice }) {
   async function review(request, approved) {
     try { await reviewContributorRequest(activeClass.id, request, approved); showNotice(approved ? `${request.requesterName} can now contribute.` : 'Request declined.'); } catch (error) { showNotice(firebaseMessage(error)); }
   }
+  async function changeRole(member, role) {
+    try {
+      await updateMemberRole(activeClass.id, member.id, role);
+      setMenuFor('');
+      showNotice(`${member.name} is now ${role === 'contributor' ? 'a contributor' : 'a member'}.`);
+    } catch (error) { showNotice(firebaseMessage(error)); }
+  }
+  async function removePerson(member) {
+    if (!window.confirm(`Remove ${member.name} from this class?`)) return;
+    try {
+      await removeMember(activeClass.id, member.id);
+      setMenuFor('');
+      showNotice(`${member.name} was removed from the class.`);
+    } catch (error) { showNotice(firebaseMessage(error)); }
+  }
   const pending = requests.filter((item) => item.status === 'pending');
   return (
     <div className="page-enter">
       <PageHeading eyebrow={`${members.length} people`} title="People in this class" body="See who can publish work and who is here as a member." />
       {isOwner && pending.length > 0 && <section className="request-queue"><div className="request-queue__heading"><span><UserCheck size={20} /></span><div><p className="eyebrow">Creator review</p><h2>Contributor requests</h2></div></div>{pending.map((request) => <div className="request-row" key={request.id}><Avatar name={request.requesterName} /><div><strong>{request.requesterName}</strong><span>{request.requesterEmail}</span>{request.note && <p>“{request.note}”</p>}</div><div><button className="secondary-button" onClick={() => review(request, false)}>Decline</button><button className="primary-button" onClick={() => review(request, true)}><Check size={16} /> Approve</button></div></div>)}</section>}
-      <div className="people-groups">{groups.map(([label, items]) => items.length > 0 && <section key={label}><div className="group-heading"><h2>{label}</h2><span>{items.length}</span></div><div className="people-list">{items.map((member) => <div className="person-row" key={member.id}><Avatar name={member.name} /><div><strong>{member.name}</strong><span>{member.email}</span></div><span className={`role-chip ${member.role}`}>{member.role === 'owner' ? <ShieldCheck size={14} /> : member.role === 'contributor' ? <PenLine size={14} /> : <Users size={14} />}{roleLabel(member.role)}</span><button className="icon-button" aria-label={`More actions for ${member.name}`}><MoreHorizontal size={18} /></button></div>)}</div></section>)}</div>
+      <div className="people-groups">{groups.map(([label, items]) => items.length > 0 && <section key={label}><div className="group-heading"><h2>{label}</h2><span>{items.length}</span></div><div className="people-list">{items.map((member) => <div className="person-row" key={member.id}><Avatar name={member.name} /><div><strong>{member.name}</strong><span>{member.email}</span></div><span className={`role-chip ${member.role}`}>{member.role === 'owner' ? <ShieldCheck size={14} /> : member.role === 'contributor' ? <PenLine size={14} /> : <Users size={14} />}{roleLabel(member.role)}</span>{isOwner && member.role !== 'owner' && member.id !== user.uid && <div className="person-actions"><button className="icon-button" onClick={() => setMenuFor((current) => current === member.id ? '' : member.id)} aria-expanded={menuFor === member.id} aria-label={`More actions for ${member.name}`}><MoreHorizontal size={18} /></button>{menuFor === member.id && <div className="person-menu"><button onClick={() => changeRole(member, member.role === 'contributor' ? 'member' : 'contributor')}>{member.role === 'contributor' ? <Users size={15} /> : <PenLine size={15} />}{member.role === 'contributor' ? 'Make member' : 'Make contributor'}</button><button className="danger" onClick={() => removePerson(member)}><Trash2 size={15} />Remove from class</button></div>}</div>}</div>)}</div></section>)}</div>
     </div>
   );
 }
 
-function InboxPage({ items, readAt, onReadAll, onOpen }) {
+function InboxPage({ items, readIds, onRead, onReadAll, onOpen }) {
   const [filter, setFilter] = useState('all');
   const visible = items.filter((item) => filter === 'all' || item.type === filter);
   return (
@@ -752,18 +870,47 @@ function InboxPage({ items, readAt, onReadAll, onOpen }) {
         <button className="secondary-button" onClick={onReadAll}><CheckCheck size={17} /> Mark all read</button>
       </PageHeading>
       <div className="inbox-filters"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>All</button><button className={filter === 'assignment' ? 'active' : ''} onClick={() => setFilter('assignment')}>Assignments</button><button className={filter === 'reminder' ? 'active' : ''} onClick={() => setFilter('reminder')}>Reminders</button><button className={filter === 'request' ? 'active' : ''} onClick={() => setFilter('request')}>Requests</button></div>
-      {visible.length ? <div className="inbox-list">{visible.map((item) => { const unread = item.date?.getTime() > readAt; return <button key={item.id} onClick={() => onOpen(item)} className={unread ? 'unread' : ''}><span className={`inbox-type ${item.type}`}>{item.type === 'assignment' ? <BookOpen size={19} /> : item.type === 'reminder' ? <Bell size={19} /> : <UserCheck size={19} />}</span><div><span>{item.kicker}</span><strong>{item.title}</strong><p>{item.body}</p></div><time>{timeAgo(item.date)}</time>{unread && <i />}</button>; })}</div> : <EmptyState icon={Inbox} title="You’re all caught up" body="New work, reminders, and requests will collect here." />}
+      {visible.length ? <div className="inbox-list">{visible.map((item) => { const unread = !readIds.has(item.id); return <div key={item.id} className={`inbox-row ${unread ? 'unread' : ''}`}><button className="inbox-row__open" onClick={() => onOpen(item)}><span className={`inbox-type ${item.type}`}>{item.type === 'assignment' ? <BookOpen size={19} /> : item.type === 'reminder' ? <Bell size={19} /> : <UserCheck size={19} />}</span><div><span>{item.kicker}</span><strong>{item.title}</strong><p>{item.body}</p></div><time>{timeAgo(item.date)}</time>{unread && <i />}</button>{unread && <button className="inbox-read" onClick={() => onRead(item.id)} aria-label={`Mark ${item.title} as read`}><Check size={15} /></button>}</div>; })}</div> : <EmptyState icon={Inbox} title="You’re all caught up" body="New work, reminders, and requests will collect here." />}
     </div>
   );
 }
 
-function buildInbox(assignments, announcements, requests, isOwner) {
+function buildInbox(assignments, announcements, requests, isOwner, userId) {
   const items = [
-    ...assignments.map((item) => ({ id: `assignment-${item.id}`, type: 'assignment', kicker: `${item.subject} · new work`, title: item.title, body: `${item.authorName} shared an assignment.`, date: item.createdAt?.toDate?.() || null, assignment: item })),
-    ...announcements.map((item) => ({ id: `reminder-${item.id}`, type: 'reminder', kicker: 'Class reminder', title: item.title, body: item.body, date: item.createdAt?.toDate?.() || null })),
+    ...assignments.filter((item) => item.authorId !== userId).map((item) => ({ id: `assignment-${item.id}`, type: 'assignment', kicker: `${item.subject} · new work`, title: item.title, body: `${item.authorName} shared an assignment.`, date: item.createdAt?.toDate?.() || null, assignment: item })),
+    ...announcements.filter((item) => item.authorId !== userId).map((item) => ({ id: `reminder-${item.id}`, type: 'reminder', kicker: 'Class reminder', title: item.title, body: item.body, date: item.createdAt?.toDate?.() || null })),
     ...requests.filter((item) => isOwner ? item.status === 'pending' : item.status !== 'pending').map((item) => ({ id: `request-${item.id}-${item.status}`, type: 'request', kicker: isOwner ? 'Contributor request' : 'Request update', title: isOwner ? `${item.requesterName} wants to contribute` : `Your request was ${item.status}`, body: isOwner ? item.note || 'Review their request to publish work and reminders.' : `The class creator ${item.status} your contributor request.`, date: (item.reviewedAt || item.createdAt)?.toDate?.() || null }))
   ];
   return items.sort((a, b) => (b.date || 0) - (a.date || 0));
+}
+
+function RankBadge({ level, small = false }) {
+  return <span className={`rank-badge rank-badge--${level.key} ${small ? 'rank-badge--small' : ''}`} title={`${level.name} level`}><img src="/badges/rank-star.svg" alt="" /><span>{level.name}</span></span>;
+}
+
+function XpProgressCard({ member, onLeaderboard }) {
+  const progress = xpProgress(member?.xp || 0);
+  return (
+    <button className="rail-card xp-card" onClick={onLeaderboard}>
+      <RankBadge level={progress.level} />
+      <span className="xp-card__copy"><small>Contributor level</small><strong>{progress.level.name} · {member?.xp || 0} XP</strong><span className="xp-track"><i style={{ width: `${progress.percent}%` }} /></span><em>{progress.remaining ? `${progress.remaining} XP to ${xpProgress(progress.level.next).level.name}` : 'Highest level reached'}</em></span>
+      <ArrowRight size={17} />
+    </button>
+  );
+}
+
+function LeaderboardPage({ members }) {
+  const week = currentWeekKey();
+  const contributors = members
+    .filter((member) => ['owner', 'contributor'].includes(member.role))
+    .map((member) => ({ ...member, currentWeeklyXp: member.xpWeek === week ? Number(member.weeklyXp || 0) : 0 }))
+    .sort((a, b) => b.currentWeeklyXp - a.currentWeeklyXp || Number(b.xp || 0) - Number(a.xp || 0));
+  return (
+    <div className="page-enter">
+      <PageHeading eyebrow="Fresh every Monday" title="Weekly contributor leaderboard" body="Assignments earn 20 XP and reminders earn 8 XP. Keep the class useful; the week’s momentum matters more than lifetime totals." />
+      {contributors.length ? <div className="leaderboard-list">{contributors.map((member, index) => { const level = xpProgress(member.xp || 0).level; return <article className={index < 3 ? `leaderboard-row podium-${index + 1}` : 'leaderboard-row'} key={member.id}><span className="leaderboard-position">{index + 1}</span><RankBadge level={level} small /><Avatar name={member.name} /><div><strong>{member.name}</strong><span>{roleLabel(member.role)} · {level.name}</span></div><div className="leaderboard-score"><strong>{member.currentWeeklyXp}</strong><span>XP this week</span></div><small>{member.xp || 0} lifetime XP</small></article>; })}</div> : <EmptyState icon={Trophy} title="No contributors yet" body="Approve a contributor request to start the weekly leaderboard." />}
+    </div>
+  );
 }
 
 function PageHeading({ eyebrow, title, body, children }) {
@@ -871,7 +1018,7 @@ function AssignmentFormModal({ activeClass, user, onClose, onDone }) {
 }
 
 function AnnouncementFormModal({ activeClass, user, onClose, onDone }) {
-  const [values, setValues] = useState({ title: '', body: '', tone: 'info', pinned: false });
+  const [values, setValues] = useState({ title: '', body: '', tone: 'info', pinned: false, expiresOn: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const update = (field) => (event) => setValues((current) => ({ ...current, [field]: event.target.value }));
@@ -879,10 +1026,10 @@ function AnnouncementFormModal({ activeClass, user, onClose, onDone }) {
     event.preventDefault(); setBusy(true);
     try { await createAnnouncement(activeClass.id, user, values); onDone(); } catch (err) { setError(firebaseMessage(err)); setBusy(false); }
   }
-  return <Modal title="Post a class reminder" eyebrow={activeClass.name} onClose={onClose}><form className="stack-form" onSubmit={submit}><Field label="Headline" icon={Bell}><input value={values.title} onChange={update('title')} placeholder="Bring graph paper tomorrow" maxLength={100} required /></Field><label className="plain-field"><span>Details</span><textarea value={values.body} onChange={update('body')} placeholder="Keep it useful and specific…" maxLength={800} required /></label><label className="plain-field"><span>Style</span><select value={values.tone} onChange={update('tone')}><option value="info">General information</option><option value="urgent">Deadline or urgent</option><option value="celebrate">Good news</option></select></label><label className="check-field"><input type="checkbox" checked={values.pinned} onChange={(event) => setValues((current) => ({ ...current, pinned: event.target.checked }))} /><span><strong>Pin this reminder</strong><small>Keep it visually prominent for the class.</small></span></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Send size={17} />} Post reminder</button></div></form></Modal>;
+  return <Modal title="Post a class reminder" eyebrow={activeClass.name} onClose={onClose}><form className="stack-form" onSubmit={submit}><Field label="Headline" icon={Bell}><input value={values.title} onChange={update('title')} placeholder="Bring graph paper tomorrow" maxLength={100} required /></Field><label className="plain-field"><span>Details</span><textarea value={values.body} onChange={update('body')} placeholder="Keep it useful and specific…" maxLength={800} required /></label><div className="form-row"><label className="plain-field"><span>Visible through</span><input type="date" value={values.expiresOn} min={new Date().toISOString().slice(0, 10)} onChange={update('expiresOn')} required /></label><label className="plain-field"><span>Style</span><select value={values.tone} onChange={update('tone')}><option value="info">General information</option><option value="urgent">Deadline or urgent</option><option value="celebrate">Good news</option></select></label></div><p className="form-help">The reminder disappears automatically after this date.</p><label className="check-field"><input type="checkbox" checked={values.pinned} onChange={(event) => setValues((current) => ({ ...current, pinned: event.target.checked }))} /><span><strong>Pin this reminder</strong><small>Keep it visually prominent for the class.</small></span></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Send size={17} />} Post reminder</button></div></form></Modal>;
 }
 
-function AssignmentDetail({ assignment, activeClass, user, onClose, showNotice }) {
+function AssignmentDetail({ assignment, activeClass, user, isOwner, onClose, onDeleted, showNotice }) {
   const [vote, setVote] = useState(0);
   const [working, setWorking] = useState(false);
   const [localAssignment, setLocalAssignment] = useState(assignment);
@@ -898,8 +1045,20 @@ function AssignmentDetail({ assignment, activeClass, user, onClose, showNotice }
     } catch (error) { showNotice(firebaseMessage(error)); }
     setWorking(false);
   }
+  async function deleteWork() {
+    if (!window.confirm(`Delete “${assignment.title}” and its discussion?`)) return;
+    setWorking(true);
+    try {
+      await removeAssignment(activeClass.id, assignment.id);
+      showNotice('Assignment deleted.');
+      onDeleted();
+    } catch (error) {
+      showNotice(firebaseMessage(error));
+      setWorking(false);
+    }
+  }
   const state = verificationState(localAssignment.upvotes, localAssignment.downvotes);
-  return <Modal title={assignment.title} eyebrow={`${assignment.subject} · ${assignment.kind}`} onClose={onClose} size="modal-card--detail"><div className="assignment-detail"><section className="assignment-detail__main"><div className={`detail-verification ${state.key}`}><span>{state.key === 'verified' ? <CheckCheck size={21} /> : state.key === 'review' ? <CircleAlert size={21} /> : <Clock3 size={21} />}</span><div><strong>{state.label}</strong><p>{state.key === 'verified' ? 'At least two classmates checked this and most agree it is correct.' : state.key === 'review' ? 'Classmates found something that may need another look.' : 'Vote after checking the work to help your class.'}</p></div></div>{assignment.description && <div className="detail-description"><h3>Contributor note</h3><p>{assignment.description}</p></div>}<div className="attachment-list"><h3>Attached work</h3>{assignment.attachments?.length ? assignment.attachments.map((file) => <a href={file.url} target="_blank" rel="noreferrer" key={file.url}><span>{file.type.startsWith('image/') ? <FileImage size={19} /> : <FileText size={19} />}</span><div><strong>{file.name}</strong><small>{Math.ceil(file.size / 1024)} KB</small></div><ArrowRight size={17} /></a>) : <p className="muted-copy">No file was attached to this assignment.</p>}</div><div className="vote-box"><div><p className="eyebrow">Check the work</p><h3>Does this look correct?</h3><p>Your vote can be changed any time.</p></div><div><button className={vote === 1 ? 'active good' : ''} onClick={() => voteFor(1)} disabled={working}><ThumbsUp size={18} /><span>Correct</span><b>{localAssignment.upvotes || 0}</b></button><button className={vote === -1 ? 'active bad' : ''} onClick={() => voteFor(-1)} disabled={working}><ThumbsDown size={18} /><span>Needs review</span><b>{localAssignment.downvotes || 0}</b></button></div></div></section><aside className="assignment-detail__thread"><ThreadRoom compact assignment={assignment} activeClass={activeClass} user={user} /></aside></div></Modal>;
+  return <Modal title={assignment.title} eyebrow={`${assignment.subject} · ${assignment.kind}`} onClose={onClose} size="modal-card--detail"><div className="assignment-detail"><section className="assignment-detail__main">{(isOwner || assignment.authorId === user.uid) && <button className="danger-text-button assignment-delete" onClick={deleteWork} disabled={working}><Trash2 size={15} />Delete assignment</button>}<div className={`detail-verification ${state.key}`}><span>{state.key === 'verified' ? <CheckCheck size={21} /> : state.key === 'review' ? <CircleAlert size={21} /> : <Clock3 size={21} />}</span><div><strong>{state.label}</strong><p>{state.key === 'verified' ? 'At least two classmates checked this and most agree it is correct.' : state.key === 'review' ? 'Classmates found something that may need another look.' : 'Vote after checking the work to help your class.'}</p></div></div>{assignment.description && <div className="detail-description"><h3>Contributor note</h3><p>{assignment.description}</p></div>}<div className="attachment-list"><h3>Attached work</h3>{assignment.attachments?.length ? assignment.attachments.map((file) => <a href={file.url} target="_blank" rel="noreferrer" key={file.url}><span>{file.type.startsWith('image/') ? <FileImage size={19} /> : <FileText size={19} />}</span><div><strong>{file.name}</strong><small>{Math.ceil(file.size / 1024)} KB</small></div><ArrowRight size={17} /></a>) : <p className="muted-copy">No file was attached to this assignment.</p>}</div><div className="vote-box"><div><p className="eyebrow">Check the work</p><h3>Does this look correct?</h3><p>Your vote can be changed any time.</p></div><div><button className={vote === 1 ? 'active good' : ''} onClick={() => voteFor(1)} disabled={working}><ThumbsUp size={18} /><span>Correct</span><b>{localAssignment.upvotes || 0}</b></button><button className={vote === -1 ? 'active bad' : ''} onClick={() => voteFor(-1)} disabled={working}><ThumbsDown size={18} /><span>Needs review</span><b>{localAssignment.downvotes || 0}</b></button></div></div></section><aside className="assignment-detail__thread"><ThreadRoom compact assignment={assignment} activeClass={activeClass} user={user} isOwner={isOwner} showNotice={showNotice} /></aside></div></Modal>;
 }
 
 export default App;

@@ -11,7 +11,7 @@ function response(status, body, origin = APP_URL) {
   return new Response(status === 204 ? null : JSON.stringify(body), {
     status,
     headers: {
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Authorization, Content-Type',
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
       'Access-Control-Allow-Origin': ALLOWED_ORIGINS.has(origin) ? origin : APP_URL,
       'Content-Type': 'application/json; charset=utf-8',
@@ -103,6 +103,13 @@ export default async (request) => {
     const payload = await request.json();
     const email = cleanEmail(payload.email);
     const name = cleanName(payload.name);
+    const authorization = request.headers.get('authorization') || '';
+    const idToken = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    if (!idToken) return response(401, { error: 'Sign in with your password first.' }, origin);
+    const verified = await getAuth(getAdminApp()).verifyIdToken(idToken);
+    if (String(verified.email || '').toLowerCase() !== email) {
+      return response(403, { error: 'The signed-in email does not match.' }, origin);
+    }
     await reserveSend(email);
     const firebaseLink = await getAuth(getAdminApp()).generateSignInWithEmailLink(email, {
       url: `${APP_URL}/?finishSignIn=1`,

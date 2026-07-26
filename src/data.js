@@ -14,7 +14,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { generateClassCode, normalizeClassCode } from './utils';
+import { currentWeekKey, generateClassCode, normalizeClassCode } from './utils';
 
 const mapSnapshot = (snapshot) => snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 
@@ -59,6 +59,9 @@ export async function createClassroom(user, details) {
     name: user.displayName,
     email: user.email,
     role: 'owner',
+    xp: 0,
+    weeklyXp: 0,
+    xpWeek: currentWeekKey(),
     joinedAt: serverTimestamp()
   });
   batch.set(doc(db, 'users', user.uid, 'classrooms', classRef.id), {
@@ -82,6 +85,9 @@ export async function joinClassroom(user, rawCode) {
     name: user.displayName,
     email: user.email,
     role: 'member',
+    xp: 0,
+    weeklyXp: 0,
+    xpWeek: currentWeekKey(),
     joinCode: code,
     joinedAt: serverTimestamp()
   }, { merge: true });
@@ -161,6 +167,33 @@ export async function reviewContributorRequest(classId, request, approved) {
   await batch.commit();
 }
 
+export async function updateMemberRole(classId, uid, role) {
+  if (!['member', 'contributor'].includes(role)) throw new Error('Choose a valid classroom role.');
+  await updateDoc(doc(db, 'classrooms', classId, 'members', uid), { role });
+}
+
+export async function removeMember(classId, uid) {
+  const batch = writeBatch(db);
+  batch.delete(doc(db, 'classrooms', classId, 'members', uid));
+  batch.delete(doc(db, 'users', uid, 'classrooms', classId));
+  await batch.commit();
+}
+
+async function awardXp(classId, uid, amount) {
+  const memberRef = doc(db, 'classrooms', classId, 'members', uid);
+  const week = currentWeekKey();
+  await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(memberRef);
+    if (!snapshot.exists()) return;
+    const member = snapshot.data();
+    transaction.update(memberRef, {
+      xp: Math.max(0, Number(member.xp || 0) + amount),
+      weeklyXp: member.xpWeek === week ? Math.max(0, Number(member.weeklyXp || 0) + amount) : amount,
+      xpWeek: week
+    });
+  });
+}
+
 export async function createAssignment(classId, user, values, attachments = []) {
   const assignmentRef = doc(collection(db, 'classrooms', classId, 'assignments'));
   await setDoc(assignmentRef, {
@@ -178,7 +211,12 @@ export async function createAssignment(classId, user, values, attachments = []) 
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
   });
+  await awardXp(classId, user.uid, 20).catch(() => {});
   return assignmentRef.id;
+}
+
+export async function removeAssignment(classId, assignmentId) {
+  await deleteDoc(doc(db, 'classrooms', classId, 'assignments', assignmentId));
 }
 
 export async function castVote(classId, assignmentId, uid, value) {
@@ -217,17 +255,23 @@ export async function sendMessage(classId, assignmentId, user, body) {
   });
 }
 
+export async function removeMessage(classId, assignmentId, messageId) {
+  await deleteDoc(doc(db, 'classrooms', classId, 'assignments', assignmentId, 'messages', messageId));
+}
+
 export async function createAnnouncement(classId, user, values) {
   await addDoc(collection(db, 'classrooms', classId, 'announcements'), {
     title: values.title.trim(),
     body: values.body.trim(),
     tone: values.tone,
     pinned: values.pinned,
+    expiresOn: values.expiresOn || null,
     authorId: user.uid,
     authorName: user.displayName,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
   });
+  await awardXp(classId, user.uid, 8).catch(() => {});
 }
 
 export async function removeAnnouncement(classId, announcementId) {

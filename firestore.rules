@@ -49,7 +49,13 @@ service cloud.firestore {
             && request.resource.data.role == 'owner'
             && getAfter(/databases/$(database)/documents/classrooms/$(classId)).data.ownerId == request.auth.uid)
         );
-        allow update: if isOwner(classId) || (isSelf(uid) && request.resource.data.role == resource.data.role);
+        allow update: if isOwner(classId) || (
+          isSelf(uid)
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['xp', 'weeklyXp', 'xpWeek'])
+          && request.resource.data.xp >= 0
+          && request.resource.data.weeklyXp >= 0
+        );
         allow delete: if isOwner(classId) || isSelf(uid);
       }
 

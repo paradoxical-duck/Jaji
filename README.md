@@ -4,18 +4,19 @@ Jaji is a private classroom collaboration hub for sharing assignment work, discu
 
 ## What is included
 
-- Passwordless Firebase Authentication links delivered through EmailJS
+- Password-first Firebase Authentication with a one-time email-link second step delivered through EmailJS
 - Six-character classroom join codes and multi-class switching
 - Classroom creator, contributor, and member roles
 - Contributor access requests reviewed by the class creator
-- Contributor-only assignment uploads to Firebase Storage
+- Contributor-only assignment uploads to Google Drive
 - Correct / needs-review voting with community verification labels and top-work sorting
 - Real-time assignment discussion threads
-- Class-wide reminders and announcements
-- A working inbox that summarizes new work, reminders, and contributor request updates
-- Class roster grouped by creator, contributors, and members
+- Dated class-wide announcements that automatically expire
+- A per-item inbox that excludes your own activity and clears assignment notifications when viewed
+- Class roster with creator moderation, role management, and member removal
+- Contributor XP, five badge levels, home-page progress, and a weekly leaderboard
 - Responsive, keyboard-accessible UI with reduced-motion support
-- Firestore and Storage rules scoped to classroom membership and roles
+- Firestore rules scoped to classroom membership and roles
 - Firebase Hosting SPA routing with immutable Vite assets
 
 ## Local development
@@ -35,11 +36,11 @@ In the Firebase console:
 
 1. Enable **Authentication → Sign-in method → Email/Password**, then enable **Email link (passwordless sign-in)**.
 2. Add every production and preview hostname under **Authentication → Settings → Authorized domains**.
-3. Create a Firestore database and a Firebase Storage bucket if they do not already exist.
+3. Create a Firestore database.
 4. Deploy the checked-in access rules:
 
 ```bash
-firebase deploy --only firestore:rules,firestore:indexes,storage --project jaji-app
+firebase deploy --only firestore:rules,firestore:indexes --project jaji-app
 ```
 
 The data model is organized under `classrooms/{classId}` with nested members, contributor requests, assignments, votes, messages, and announcements. A small `users/{uid}/classrooms` reference collection makes each user’s classroom switcher efficient.
@@ -90,3 +91,5 @@ netlify deploy --prod
 ```
 
 If a fallback hostname is used, add it to Firebase Authentication’s authorized domains so sign-in links work there.
+
+Rank badge artwork is adapted from the CC-BY [Game Icons badge collection](https://github.com/game-icons/icons).
