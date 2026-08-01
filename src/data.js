@@ -1,5 +1,6 @@
 import {
   addDoc,
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -15,7 +16,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { currentWeekKey, generateClassCode, normalizeClassCode } from './utils';
+import { calculateXpAward, currentWeekKey, generateClassCode, normalizeClassCode } from './utils';
 
 const text = (value, fallback = '') => typeof value === 'string' ? value : fallback;
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
@@ -103,6 +104,8 @@ export async function createClassroom(user, details) {
     streakDays: 0,
     lastContributionDate: '',
     equippedBadge: '',
+    earnedBadges: [],
+    profileEmoji: '',
     joinedAt: serverTimestamp()
   });
   batch.set(doc(db, 'users', user.uid, 'classrooms', classRef.id), {
@@ -136,6 +139,8 @@ export async function joinClassroom(user, rawCode) {
     streakDays: 0,
     lastContributionDate: '',
     equippedBadge: '',
+    earnedBadges: [],
+    profileEmoji: '',
     joinCode: code,
     joinedAt: serverTimestamp()
   }, { merge: true });
@@ -182,11 +187,7 @@ export function subscribeAnnouncements(classId, onData, onError) {
 }
 
 export function subscribeSchedule(classId, onData, onError) {
-  return onSnapshot(
-    query(collection(db, 'classrooms', classId, 'schedule'), orderBy('date', 'asc')),
-    (snapshot) => onData(mapSnapshot(snapshot)),
-    onError
-  );
+  return onSnapshot(collection(db, 'classrooms', classId, 'schedule'), (snapshot) => onData(mapSnapshot(snapshot)), onError);
 }
 
 export function subscribeContributorRequests(classId, uid, isOwner, onData, onError) {
@@ -237,34 +238,10 @@ export async function removeMember(classId, uid) {
 
 async function awardXp(classId, uid, amount) {
   const memberRef = doc(db, 'classrooms', classId, 'members', uid);
-  const week = currentWeekKey();
-  const today = new Date().toISOString().slice(0, 10);
-  const month = today.slice(0, 7);
-  const year = today.slice(0, 4);
   await runTransaction(db, async (transaction) => {
     const snapshot = await transaction.get(memberRef);
     if (!snapshot.exists()) return;
-    const member = snapshot.data();
-    const yesterday = new Date(`${today}T00:00:00.000Z`);
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-    const yesterdayKey = yesterday.toISOString().slice(0, 10);
-    const isNewDay = member.lastContributionDate !== today;
-    const streakDays = isNewDay
-      ? (member.lastContributionDate === yesterdayKey ? number(member.streakDays) + 1 : 1)
-      : number(member.streakDays);
-    const streakBonus = isNewDay ? Math.min(streakDays, 7) * 2 : 0;
-    const earned = amount + streakBonus;
-    transaction.update(memberRef, {
-      xp: Math.max(0, number(member.xp) + earned),
-      weeklyXp: member.xpWeek === week ? Math.max(0, number(member.weeklyXp) + earned) : earned,
-      xpWeek: week,
-      monthlyXp: member.xpMonth === month ? Math.max(0, number(member.monthlyXp) + earned) : earned,
-      xpMonth: month,
-      yearlyXp: member.xpYear === year ? Math.max(0, number(member.yearlyXp) + earned) : earned,
-      xpYear: year,
-      streakDays,
-      lastContributionDate: isNewDay ? today : member.lastContributionDate
-    });
+    transaction.update(memberRef, calculateXpAward(snapshot.data(), amount));
   });
 }
 
@@ -416,16 +393,57 @@ export async function updateUserProfile(user, classIds, values) {
   batch.set(doc(db, 'users', user.uid), {
     displayName: values.displayName,
     photoURL: values.photoURL || '',
+    profileEmoji: values.profileEmoji || '',
     updatedAt: serverTimestamp()
   }, { merge: true });
   classIds.forEach((classId) => {
     batch.set(doc(db, 'classrooms', classId, 'members', user.uid), {
       name: values.displayName,
       photoURL: values.photoURL || '',
+      profileEmoji: values.profileEmoji || '',
       equippedBadge: values.equippedBadge || ''
     }, { merge: true });
   });
   await batch.commit();
+}
+
+export async function finalizeClassAwards(classId, members) {
+  const current = {
+    week: currentWeekKey(),
+    month: new Date().toISOString().slice(0, 7),
+    year: String(new Date().getUTCFullYear())
+  };
+  const definitions = [
+    { type: 'week', keyField: 'xpWeek', scoreField: 'weeklyXp', previousKey: 'previousWeekKey', previousScore: 'previousWeeklyXp' },
+    { type: 'month', keyField: 'xpMonth', scoreField: 'monthlyXp', previousKey: 'previousMonthKey', previousScore: 'previousMonthlyXp' },
+    { type: 'year', keyField: 'xpYear', scoreField: 'yearlyXp', previousKey: 'previousYearKey', previousScore: 'previousYearlyXp' }
+  ];
+  const batch = writeBatch(db);
+  let updates = 0;
+  definitions.forEach((definition) => {
+    const entries = [];
+    members.filter((member) => ['owner', 'contributor'].includes(member.role)).forEach((member) => {
+      if (member[definition.keyField] && member[definition.keyField] !== current[definition.type]) {
+        entries.push({ member, key: member[definition.keyField], score: number(member[definition.scoreField]) });
+      }
+      if (member[definition.previousKey]) {
+        entries.push({ member, key: member[definition.previousKey], score: number(member[definition.previousScore]) });
+      }
+    });
+    const completedKey = entries.map((entry) => entry.key).sort().at(-1);
+    if (!completedKey) return;
+    const periodEntries = entries.filter((entry) => entry.key === completedKey && entry.score > 0);
+    const highScore = Math.max(0, ...periodEntries.map((entry) => entry.score));
+    const token = `${definition.type}:${completedKey}`;
+    periodEntries.filter((entry) => entry.score === highScore && !(entry.member.earnedBadges || []).includes(token)).forEach((entry) => {
+      batch.update(doc(db, 'classrooms', classId, 'members', entry.member.id), {
+        earnedBadges: arrayUnion(token),
+        earnedBadgeTypes: arrayUnion(definition.type)
+      });
+      updates += 1;
+    });
+  });
+  if (updates) await batch.commit();
 }
 
 export async function createAnnouncement(classId, user, values) {
@@ -448,17 +466,22 @@ export async function removeAnnouncement(classId, announcementId) {
 }
 
 export async function createScheduleEvent(classId, user, values) {
-  await addDoc(collection(db, 'classrooms', classId, 'schedule'), {
+  const day = text(values.day, 'mon').toLowerCase();
+  const period = Math.min(12, Math.max(1, number(values.period)));
+  const slotId = `${day}-${period}`;
+  await setDoc(doc(db, 'classrooms', classId, 'schedule', slotId), {
     title: values.title.trim(),
-    details: values.details.trim(),
-    date: values.date,
+    details: values.details?.trim() || '',
+    day,
+    period,
     startTime: values.startTime || '',
     endTime: values.endTime || '',
     type: values.type,
     authorId: user.uid,
     authorName: user.displayName,
-    createdAt: serverTimestamp()
-  });
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  }, { merge: true });
   await awardXp(classId, user.uid, 5).catch(() => {});
 }
 

@@ -2,7 +2,6 @@ import { Component, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   ArrowRight,
-  Award,
   Bell,
   BookOpen,
   CalendarDays,
@@ -65,6 +64,7 @@ import {
   createAssignment,
   createClassroom,
   createScheduleEvent,
+  finalizeClassAwards,
   getMyVote,
   joinClassroom,
   removeAssignment,
@@ -98,6 +98,7 @@ import {
   timeAgo,
   verificationState,
   currentWeekKey,
+  currentStreak,
   xpProgress
 } from './utils';
 
@@ -508,6 +509,11 @@ function Workspace({ user }) {
   }, [selectedClassId, user.uid, membership]);
 
   useEffect(() => {
+    if (!selectedClassId || !isOwner || !members.length) return;
+    finalizeClassAwards(selectedClassId, members).catch((error) => setToast(firebaseMessage(error)));
+  }, [selectedClassId, isOwner, members]);
+
+  useEffect(() => {
     if (!toast) return undefined;
     const timer = window.setTimeout(() => setToast(''), 4200);
     return () => window.clearTimeout(timer);
@@ -584,7 +590,7 @@ function Workspace({ user }) {
         </nav>
         <div className="sidebar-bottom">
           <div className="mini-profile">
-            <Avatar name={membership?.name || user.displayName} photoURL={membership?.photoURL} badge={membership?.equippedBadge} />
+            <Avatar name={membership?.name || user.displayName} photoURL={membership?.photoURL} profileEmoji={membership?.profileEmoji} badge={membership?.equippedBadge} />
             <div><strong>{membership?.name || user.displayName}</strong><span>{roleLabel(membership?.role)}</span></div>
             <button className="icon-button icon-button--dark" onClick={() => setModal('settings')} aria-label="Profile settings"><Settings size={17} /></button>
             <button className="icon-button icon-button--dark" onClick={() => signOut(auth)} aria-label="Sign out"><LogOut size={17} /></button>
@@ -601,10 +607,9 @@ function Workspace({ user }) {
             <strong>{activeClass?.name}</strong>
           </div>
           <div className="topbar-actions">
-            {isContributor && <button className="streak-pill" onClick={() => setPage('leaderboard')} aria-label={`${membership?.streakDays || 0} day contribution streak`}><Flame size={17} /><strong>{membership?.streakDays || 0}</strong><span>day streak</span></button>}
-            {isContributor && <button className="secondary-button topbar-create" onClick={() => setModal('assignment')}><Plus size={17} /> Add work</button>}
+            {isContributor && <button className="streak-pill" onClick={() => setPage('leaderboard')} aria-label={`${currentStreak(membership)} day contribution streak`}><span className="streak-pill__flame"><Flame size={18} /></span><strong>{currentStreak(membership)}</strong><span><b>day streak</b><small>{membership?.lastAwardBonus ? `last bonus +${membership.lastAwardBonus} XP` : 'post daily to grow it'}</small></span></button>}
             <button className="inbox-button" onClick={() => setPage('inbox')} aria-label={`${unreadCount} unread inbox items`}><Inbox size={19} />{unreadCount > 0 && <span>{unreadCount}</span>}</button>
-            <button className="topbar-profile" onClick={() => setModal('settings')} aria-label="Open profile settings"><Avatar name={membership?.name || user.displayName} photoURL={membership?.photoURL} badge={membership?.equippedBadge} small /></button>
+            <button className="topbar-profile" onClick={() => setModal('settings')} aria-label="Open profile settings"><Avatar name={membership?.name || user.displayName} photoURL={membership?.photoURL} profileEmoji={membership?.profileEmoji} badge={membership?.equippedBadge} small /></button>
           </div>
         </header>
 
@@ -625,9 +630,9 @@ function Workspace({ user }) {
       {modal === 'classActions' && <ClassActionsModal user={user} onClose={() => setModal(null)} onDone={(item) => { setModal(null); selectClass(item.id); showNotice(`Welcome to ${item.name}.`); }} />}
       {modal === 'assignment' && <AssignmentFormModal activeClass={activeClass} user={user} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Assignment published to your class.'); }} />}
       {modal === 'announcement' && <AnnouncementFormModal activeClass={activeClass} user={user} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Reminder posted to the class.'); }} />}
-      {modal === 'schedule' && <ScheduleEventModal activeClass={activeClass} user={user} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Timetable updated.'); }} />}
+      {(modal === 'schedule' || modal?.type === 'schedule') && <ScheduleEventModal activeClass={activeClass} user={user} initial={modal?.slot} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Timetable updated.'); }} />}
       {modal === 'contributor' && <ContributorRequestModal activeClass={activeClass} user={user} existing={requests[0]} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Request sent to the class creator.'); }} />}
-      {modal === 'settings' && <ProfileSettingsModal user={user} membership={membership} members={members} classIds={classes.map((item) => item.id)} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Profile updated.'); }} />}
+      {modal === 'settings' && <ProfileSettingsModal user={user} membership={membership} classIds={classes.map((item) => item.id)} onClose={() => setModal(null)} onDone={() => { setModal(null); showNotice('Profile updated.'); }} />}
       {selectedAssignment && <AssignmentDetail assignment={selectedAssignment} activeClass={activeClass} user={user} isOwner={isOwner} onClose={() => setSelectedAssignment(null)} onDeleted={() => setSelectedAssignment(null)} showNotice={showNotice} />}
       {toast && <div className="toast" role="status"><Check size={17} />{toast}</div>}
     </div>
@@ -687,7 +692,7 @@ function ClassSwitcher({ classes, activeClass, onSelect, onAdd }) {
 }
 
 function Dashboard(props) {
-  const { activeClass, membership, members, assignments, announcements, requests, user, isContributor, isOwner, setModal, setPage, setSelectedAssignment } = props;
+  const { activeClass, membership, members, assignments, announcements, requests, user, isContributor, isOwner, setModal, setPage, setSelectedAssignment, showNotice } = props;
   const topAssignments = [...assignments].sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 3);
   const latestAnnouncement = announcements[0];
   const pendingRequest = requests.find((item) => item.status === 'pending');
@@ -721,15 +726,15 @@ function Dashboard(props) {
           )}
           <SectionHeading eyebrow="Checked by your class" title="Most trusted work" action="View all" onAction={() => setPage('assignments')} />
           {topAssignments.length ? (
-            <div className="assignment-grid">{topAssignments.map((assignment, index) => <AssignmentCard key={assignment.id} assignment={assignment} rank={index + 1} onOpen={() => setSelectedAssignment(assignment)} />)}</div>
+            <div className="assignment-grid">{topAssignments.map((assignment, index) => <AssignmentCard key={assignment.id} assignment={assignment} rank={index + 1} activeClass={activeClass} user={user} showNotice={showNotice} onOpen={() => setSelectedAssignment(assignment)} />)}</div>
           ) : (
             <EmptyState icon={ClipboardCheck} title="No work has landed yet" body={isContributor ? 'Publish the first assignment and give your class a place to begin.' : 'A contributor will publish class work here.'} action={isContributor ? 'Add class work' : null} onAction={() => setModal('assignment')} />
           )}
           <SectionHeading eyebrow="The room" title="Class activity" />
           <div className="activity-cards">
-            <button onClick={() => setPage('people')}><span className="activity-icon coral"><Users size={20} /></span><strong>{members.length}</strong><small>people in this class</small><ArrowRight size={17} /></button>
-            <button onClick={() => setPage('threads')}><span className="activity-icon blue"><MessageCircle size={20} /></span><strong>{assignments.length}</strong><small>assignment threads</small><ArrowRight size={17} /></button>
-            <button onClick={() => setPage('reminders')}><span className="activity-icon yellow"><Bell size={20} /></span><strong>{announcements.length}</strong><small>class reminders</small><ArrowRight size={17} /></button>
+            <ActivityCard icon={Users} tone="coral" value={members.length} label="People" hint="See roles & access" onClick={() => setPage('people')} />
+            <ActivityCard icon={MessageCircle} tone="blue" value={assignments.length} label="Threads" hint="Discuss class work" onClick={() => setPage('threads')} />
+            <ActivityCard icon={Bell} tone="yellow" value={announcements.length} label="Reminders" hint="Class-wide notices" onClick={() => setPage('reminders')} />
           </div>
         </div>
 
@@ -747,7 +752,7 @@ function Dashboard(props) {
           )}
           <div className="rail-card roster-peek">
             <div className="rail-title"><strong>People here</strong><button onClick={() => setPage('people')}>See all</button></div>
-            <div className="avatar-stack">{members.slice(0, 5).map((member) => <Avatar key={member.id} name={member.name} photoURL={member.photoURL} badge={member.equippedBadge} title={member.name} />)}{members.length > 5 && <span>+{members.length - 5}</span>}</div>
+            <div className="avatar-stack">{members.slice(0, 5).map((member) => <Avatar key={member.id} name={member.name} photoURL={member.photoURL} profileEmoji={member.profileEmoji} badge={member.equippedBadge} title={member.name} />)}{members.length > 5 && <span>+{members.length - 5}</span>}</div>
             <p>{members.filter((member) => ['owner', 'contributor'].includes(member.role)).length} people can publish work and reminders.</p>
           </div>
         </aside>
@@ -756,7 +761,11 @@ function Dashboard(props) {
   );
 }
 
-function AssignmentsPage({ assignments, isContributor, setModal, setSelectedAssignment }) {
+function ActivityCard({ icon: Icon, tone, value, label, hint, onClick }) {
+  return <button className="activity-card" onClick={onClick}><span className={`activity-icon ${tone}`}><Icon size={21} /></span><span className="activity-card__copy"><span><strong>{value}</strong><b>{label}</b></span><small>{hint}</small></span><span className="activity-card__go"><ArrowRight size={17} /></span></button>;
+}
+
+function AssignmentsPage({ assignments, isContributor, activeClass, user, showNotice, setModal, setSelectedAssignment }) {
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('top');
   const visible = useMemo(() => {
@@ -776,29 +785,54 @@ function AssignmentsPage({ assignments, isContributor, setModal, setSelectedAssi
         <label className="search-control"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title, subject, or contributor" /></label>
         <div className="sort-control"><button className={sort === 'top' ? 'active' : ''} onClick={() => setSort('top')}>Top verified</button><button className={sort === 'new' ? 'active' : ''} onClick={() => setSort('new')}>Newest</button><button className={sort === 'old' ? 'active' : ''} onClick={() => setSort('old')}>Oldest</button></div>
       </div>
-      {visible.length ? <div className="assignment-grid assignment-grid--wide">{visible.map((assignment, index) => <AssignmentCard key={assignment.id} assignment={assignment} rank={sort === 'top' ? index + 1 : null} onOpen={() => setSelectedAssignment(assignment)} />)}</div> : <EmptyState icon={Archive} title="No assignments match" body="Try a different search, or publish new class work." />}
+      {visible.length ? <div className="assignment-grid assignment-grid--wide">{visible.map((assignment, index) => <AssignmentCard key={assignment.id} assignment={assignment} rank={sort === 'top' ? index + 1 : null} activeClass={activeClass} user={user} showNotice={showNotice} onOpen={() => setSelectedAssignment(assignment)} />)}</div> : <EmptyState icon={Archive} title="No assignments match" body="Try a different search, or publish new class work." />}
     </div>
   );
 }
 
-function AssignmentCard({ assignment, rank, onOpen }) {
+function attachmentThumbnail(attachment) {
+  if (!attachment?.type?.startsWith('image/')) return '';
+  if (attachment.driveFileId) return `https://drive.google.com/thumbnail?id=${encodeURIComponent(attachment.driveFileId)}&sz=w800`;
+  return /drive\.google\.com\/file\//.test(attachment.url || '') ? '' : attachment.url;
+}
+
+function AssignmentCard({ assignment, rank, activeClass, user, showNotice, onOpen }) {
   const state = verificationState(assignment.upvotes, assignment.downvotes);
   const attachment = assignment.attachments?.[0];
+  const preview = attachmentThumbnail(attachment);
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const [vote, setVote] = useState(0);
+  const [counts, setCounts] = useState({ up: assignment.upvotes || 0, down: assignment.downvotes || 0 });
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (activeClass?.id && user?.uid) getMyVote(activeClass.id, assignment.id, user.uid).then(setVote).catch(() => {}); }, [activeClass?.id, assignment.id, user?.uid]);
+  useEffect(() => setCounts({ up: assignment.upvotes || 0, down: assignment.downvotes || 0 }), [assignment.upvotes, assignment.downvotes]);
+  async function voteFor(value) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const previous = vote;
+      const next = await castVote(activeClass.id, assignment.id, user, value);
+      setVote(next);
+      setCounts((current) => ({ up: Math.max(0, current.up - (previous === 1 ? 1 : 0) + (next === 1 ? 1 : 0)), down: Math.max(0, current.down - (previous === -1 ? 1 : 0) + (next === -1 ? 1 : 0)) }));
+    } catch (error) { showNotice(firebaseMessage(error)); }
+    finally { setBusy(false); }
+  }
   return (
-    <button className="assignment-card" onClick={onOpen}>
-      <div className={`assignment-card__cover cover-${assignment.kind?.toLowerCase() || 'work'}`}>
+    <article className="assignment-card">
+      <button className={`assignment-card__cover cover-${assignment.kind?.toLowerCase() || 'work'}`} onClick={onOpen} aria-label={`Open ${assignment.title}`}>
         <span className="subject-stamp">{assignment.subject}</span>
         {rank && <span className="rank-stamp">#{rank}</span>}
-        {attachment?.type?.startsWith('image/') ? <img src={attachment.url} alt="" /> : <div className="paper-lines"><span /><span /><span /><span /></div>}
-      </div>
+        {preview && !previewFailed ? <img src={preview} alt="" onError={() => setPreviewFailed(true)} /> : <div className="assignment-cover-art"><FileText size={34} /><span>{assignment.kind || 'Class work'}</span></div>}
+      </button>
       <div className="assignment-card__body">
         {assignment.reported && <div className="reported-chip"><Flag size={12} /> Reported · check carefully</div>}
         <div className={`verification-badge ${state.key}`}>{state.key === 'verified' ? <CheckCheck size={14} /> : state.key === 'review' ? <CircleAlert size={14} /> : <Clock3 size={14} />}{state.label}</div>
         <h3>{assignment.title}</h3>
         <p>by {assignment.authorName} · {timeAgo(assignment.createdAt)}</p>
-        <div className="card-footer"><span><ThumbsUp size={15} /> {assignment.upvotes || 0}</span><span><ThumbsDown size={15} /> {assignment.downvotes || 0}</span><span className="card-open">Open <ArrowRight size={15} /></span></div>
+        <div className="card-votes"><button className={vote === 1 ? 'active good' : ''} onClick={() => voteFor(1)} disabled={busy} aria-label="Mark correct"><ThumbsUp size={16} /><span>{counts.up}</span></button><button className={vote === -1 ? 'active bad' : ''} onClick={() => voteFor(-1)} disabled={busy} aria-label="Mark needs review"><ThumbsDown size={16} /><span>{counts.down}</span></button></div>
+        <button className="card-open" onClick={onOpen}>Open work <ArrowRight size={16} /></button>
       </div>
-    </button>
+    </article>
   );
 }
 
@@ -901,35 +935,23 @@ function RemindersPage({ announcements, isContributor, isOwner, activeClass, use
   );
 }
 
-function TimetablePage({ schedule, assignments, announcements, isContributor, isOwner, activeClass, user, setModal, showNotice, setSelectedAssignment }) {
-  const today = new Date();
-  const [selectedDate, setSelectedDate] = useState(dateKey(today));
-  const [view, setView] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
-  const year = view.getFullYear();
-  const month = view.getMonth();
-  const firstOffset = new Date(year, month, 1).getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const items = [
-    ...schedule.map((item) => ({ ...item, source: 'schedule' })),
-    ...assignments.filter((item) => item.dueDate).map((item) => ({ id: `assignment-${item.id}`, title: item.title, date: item.dueDate, type: 'assignment', source: 'assignment', assignment: item })),
-    ...announcements.filter((item) => item.expiresOn).map((item) => ({ id: `reminder-${item.id}`, title: item.title, date: item.expiresOn, type: 'reminder', source: 'reminder' }))
-  ].sort((a, b) => String(a.startTime || '').localeCompare(String(b.startTime || '')));
-  const selectedItems = items.filter((item) => item.date === selectedDate);
-  const cells = Array.from({ length: 42 }, (_, index) => {
-    const day = index - firstOffset + 1;
-    return day > 0 && day <= daysInMonth ? new Date(year, month, day) : null;
-  });
-  async function remove(item) {
-    if (!window.confirm(`Remove “${item.title}” from the timetable?`)) return;
-    try {
-      await removeScheduleEvent(activeClass.id, item.id);
-      showNotice('Timetable entry removed.');
-    } catch (error) {
-      showNotice(firebaseMessage(error));
-    }
+function TimetablePage({ schedule, assignments, announcements, isContributor, isOwner, user, setModal, setSelectedAssignment }) {
+  const days = [{ key: 'mon', label: 'Monday' }, { key: 'tue', label: 'Tuesday' }, { key: 'wed', label: 'Wednesday' }, { key: 'thu', label: 'Thursday' }, { key: 'fri', label: 'Friday' }];
+  const periods = Array.from({ length: 12 }, (_, index) => index + 1);
+  const deadlines = [
+    ...assignments.filter((item) => item.dueDate).map((item) => ({ ...item, date: item.dueDate, source: 'assignment' })),
+    ...announcements.filter((item) => item.expiresOn).map((item) => ({ ...item, date: item.expiresOn, source: 'reminder' }))
+  ].filter((item) => item.date >= dateKey(new Date())).sort((a, b) => itemDate(a).localeCompare(itemDate(b))).slice(0, 6);
+  function slotFor(day, period) { return schedule.find((item) => item.day === day && Number(item.period) === period) || schedule.find((item) => item.day === 'all' && Number(item.period) === period); }
+  function canEdit(slot) { return isContributor && (!slot || isOwner || slot.authorId === user.uid); }
+  function openSlot(day, period) {
+    const slot = slotFor(day, period);
+    if (canEdit(slot)) setModal({ type: 'schedule', slot: { ...slot, day: slot?.day || day, period } });
   }
-  return <div className="page-enter"><PageHeading eyebrow="One view for the whole class" title="Class timetable" body="Scheduled classes, assignment due dates, and reminder deadlines live together here.">{isContributor && <button className="primary-button" onClick={() => setModal('schedule')}><Plus size={17} />Add timetable entry</button>}</PageHeading><div className="timetable-shell"><section className="timetable-calendar"><header><button onClick={() => setView(new Date(year, month - 1, 1))} aria-label="Previous month"><ChevronLeft size={19} /></button><div><span>Class calendar</span><strong>{view.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</strong></div><button onClick={() => setView(new Date(year, month + 1, 1))} aria-label="Next month"><ChevronRight size={19} /></button></header><div className="timetable-weekdays">{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => <span key={day}>{day}</span>)}</div><div className="timetable-grid">{cells.map((date, index) => date ? (() => { const key = dateKey(date); const dayItems = items.filter((item) => item.date === key); return <button key={key} className={`${key === selectedDate ? 'selected' : ''} ${key === dateKey(today) ? 'today' : ''}`} onClick={() => setSelectedDate(key)}><span>{date.getDate()}</span><div>{dayItems.slice(0, 3).map((item) => <i className={`event-${item.type}`} key={item.id} />)}</div>{dayItems.length > 3 && <small>+{dayItems.length - 3}</small>}</button>; })() : <span key={`blank-${index}`} />)}</div></section><aside className="timetable-agenda"><div className="agenda-heading"><span>Selected day</span><strong>{new Date(`${selectedDate}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</strong></div>{selectedItems.length ? <div className="agenda-list">{selectedItems.map((item) => <article key={`${item.source}-${item.id}`} className={`agenda-item type-${item.type}`} onClick={() => item.assignment && setSelectedAssignment(item.assignment)}><span>{item.startTime || (item.source === 'assignment' ? 'DUE' : item.source === 'reminder' ? 'END' : 'ALL DAY')}</span><div><strong>{item.title}</strong><p>{item.details || (item.source === 'assignment' ? 'Assignment due date' : item.source === 'reminder' ? 'Reminder expires' : item.type)}</p></div>{item.source === 'schedule' && (isOwner || item.authorId === user.uid) && <button onClick={(event) => { event.stopPropagation(); remove(item); }} aria-label="Remove timetable entry"><Trash2 size={15} /></button>}</article>)}</div> : <EmptyState icon={CalendarDays} title="Nothing scheduled" body={isContributor ? 'Add a class, study session, or deadline for everyone to see.' : 'Your contributors will add the class plan here.'} action={isContributor ? 'Add entry' : null} onAction={() => setModal('schedule')} />}</aside></div></div>;
+  return <div className="page-enter"><PageHeading eyebrow="Monday to Friday, at a glance" title="Class timetable" body="A shared weekly plan with up to twelve periods, precise timings, rooms, and breaks.">{isContributor && <button className="primary-button" onClick={() => setModal({ type: 'schedule', slot: { day: 'mon', period: 1 } })}><Plus size={17} />Add a period</button>}</PageHeading><section className="weekly-board"><div className="weekly-board__intro"><span><CalendarDays size={20} /></span><div><strong>Weekly class plan</strong><small>{isContributor ? 'Select any cell to add or edit a period.' : 'Your contributors keep this timetable up to date.'}</small></div><div className="timetable-key"><i className="class" />Class<i className="break" />Break</div></div><div className="weekly-grid"><div className="weekly-grid__corner"><b>Period</b><small>Time</small></div>{days.map((day) => <div className="weekly-grid__day" key={day.key}><b>{day.label.slice(0, 3)}</b><span>{day.label}</span></div>)}{periods.map((period) => { const rowSlots = days.map((day) => slotFor(day.key, period)); const timing = rowSlots.find((slot) => slot?.startTime || slot?.endTime); return <div className="weekly-grid__row" key={period}><div className="weekly-grid__period"><strong>{period}</strong><span>{timing?.startTime ? `${timing.startTime}${timing.endTime ? `–${timing.endTime}` : ''}` : 'Set time'}</span></div>{days.map((day) => { const slot = slotFor(day.key, period); return <button key={day.key} className={`weekly-slot ${slot ? `filled type-${slot.type}` : ''}`} onClick={() => openSlot(day.key, period)} disabled={!canEdit(slot)}><span className="weekly-slot__accent" />{slot ? <><strong>{slot.title}</strong><small>{slot.details || (slot.type === 'break' ? 'Class break' : slot.authorName)}</small>{canEdit(slot) && <span className="weekly-slot__edit"><PenLine size={12} /></span>}</> : <><Plus size={15} /><small>{isContributor ? 'Add' : 'Free'}</small></>}</button>; })}</div>; })}</div></section><section className="deadline-strip"><div className="deadline-strip__heading"><div><p className="eyebrow">Dates that matter</p><h2>Upcoming deadlines</h2></div><span>{deadlines.length} ahead</span></div>{deadlines.length ? <div className="deadline-list">{deadlines.map((item) => <button key={`${item.source}-${item.id}`} onClick={() => item.source === 'assignment' && setSelectedAssignment(item)}><time><b>{new Date(`${item.date}T12:00:00`).toLocaleDateString(undefined, { day: '2-digit' })}</b><span>{new Date(`${item.date}T12:00:00`).toLocaleDateString(undefined, { month: 'short' })}</span></time><div><small>{item.source === 'assignment' ? 'Assignment due' : 'Reminder ends'}</small><strong>{item.title}</strong></div><ArrowRight size={16} /></button>)}</div> : <p className="muted-copy">No assignment due dates or reminder deadlines are coming up.</p>}</section></div>;
 }
+
+function itemDate(item) { return String(item.date || ''); }
 
 function PeoplePage({ members, requests, isOwner, activeClass, user, showNotice }) {
   const [menuFor, setMenuFor] = useState('');
@@ -961,7 +983,7 @@ function PeoplePage({ members, requests, isOwner, activeClass, user, showNotice 
     <div className="page-enter">
       <PageHeading eyebrow={`${members.length} people`} title="People in this class" body="See who can publish work and who is here as a member." />
       {isOwner && pending.length > 0 && <section className="request-queue"><div className="request-queue__heading"><span><UserCheck size={20} /></span><div><p className="eyebrow">Creator review</p><h2>Contributor requests</h2></div></div>{pending.map((request) => <div className="request-row" key={request.id}><Avatar name={request.requesterName} /><div><strong>{request.requesterName}</strong><span>{request.requesterEmail}</span>{request.note && <p>“{request.note}”</p>}</div><div><button className="secondary-button" onClick={() => review(request, false)}>Decline</button><button className="primary-button" onClick={() => review(request, true)}><Check size={16} /> Approve</button></div></div>)}</section>}
-      <div className="people-groups">{groups.map(([label, items]) => items.length > 0 && <section key={label}><div className="group-heading"><h2>{label}</h2><span>{items.length}</span></div><div className="people-list">{items.map((member) => <div className="person-row" key={member.id}><Avatar name={member.name} photoURL={member.photoURL} badge={member.equippedBadge} /><div><strong>{member.name}</strong><span>{member.email}</span></div><span className={`role-chip ${member.role}`}>{member.role === 'owner' ? <ShieldCheck size={14} /> : member.role === 'contributor' ? <PenLine size={14} /> : <Users size={14} />}{roleLabel(member.role)}</span>{isOwner && member.role !== 'owner' && member.id !== user.uid && <div className="person-actions"><button className="icon-button" onClick={() => setMenuFor((current) => current === member.id ? '' : member.id)} aria-expanded={menuFor === member.id} aria-label={`More actions for ${member.name}`}><MoreHorizontal size={18} /></button>{menuFor === member.id && <div className="person-menu"><button onClick={() => changeRole(member, member.role === 'contributor' ? 'member' : 'contributor')}>{member.role === 'contributor' ? <Users size={15} /> : <PenLine size={15} />}{member.role === 'contributor' ? 'Make member' : 'Make contributor'}</button><button className="danger" onClick={() => removePerson(member)}><Trash2 size={15} />Remove from class</button></div>}</div>}</div>)}</div></section>)}</div>
+      <div className="people-groups">{groups.map(([label, items]) => items.length > 0 && <section key={label}><div className="group-heading"><h2>{label}</h2><span>{items.length}</span></div><div className="people-list">{items.map((member) => <div className="person-row" key={member.id}><Avatar name={member.name} photoURL={member.photoURL} profileEmoji={member.profileEmoji} badge={member.equippedBadge} /><div><strong>{member.name}</strong><span>{member.email}</span></div><span className={`role-chip ${member.role}`}>{member.role === 'owner' ? <ShieldCheck size={14} /> : member.role === 'contributor' ? <PenLine size={14} /> : <Users size={14} />}{roleLabel(member.role)}</span>{isOwner && member.role !== 'owner' && member.id !== user.uid && <div className="person-actions"><button className="icon-button" onClick={() => setMenuFor((current) => current === member.id ? '' : member.id)} aria-expanded={menuFor === member.id} aria-label={`More actions for ${member.name}`}><MoreHorizontal size={18} /></button>{menuFor === member.id && <div className="person-menu"><button onClick={() => changeRole(member, member.role === 'contributor' ? 'member' : 'contributor')}>{member.role === 'contributor' ? <Users size={15} /> : <PenLine size={15} />}{member.role === 'contributor' ? 'Make member' : 'Make contributor'}</button><button className="danger" onClick={() => removePerson(member)}><Trash2 size={15} />Remove from class</button></div>}</div>}</div>)}</div></section>)}</div>
     </div>
   );
 }
@@ -1002,44 +1024,32 @@ function buildInbox(assignments, announcements, requests, notifications, isOwner
 }
 
 function RankBadge({ level, small = false }) {
-  return <span className={`rank-badge rank-badge--${level.key} ${small ? 'rank-badge--small' : ''}`} title={`${level.name} level`}><img src="/badges/rank-star.svg" alt="" /><span>{level.name}</span></span>;
+  return <span className={`rank-badge rank-badge--${level.key} ${small ? 'rank-badge--small' : ''}`} title={`${level.name}: ${level.title}`}><img src={level.image} alt="" /><span>{level.name}</span></span>;
 }
 
 const ACHIEVEMENT_BADGES = [
-  { key: 'week', name: 'Weekly ace', detail: 'Leading contributor this week', icon: '7' },
-  { key: 'month', name: 'Monthly MVP', detail: 'Leading contributor this month', icon: '30' },
-  { key: 'year', name: 'Year champion', detail: 'Leading contributor this year', icon: '365' }
+  { key: 'week', name: 'Spark of the week', detail: 'Finished a week as top contributor', emoji: '⚡' },
+  { key: 'month', name: 'Moon scholar', detail: 'Finished a month as top contributor', emoji: '🌙' },
+  { key: 'year', name: 'Crown laureate', detail: 'Finished a year as top contributor', emoji: '👑' }
 ];
 
-function periodXp(member, key) {
-  const today = new Date().toISOString();
-  if (key === 'week') return member.xpWeek === currentWeekKey() ? Number(member.weeklyXp || 0) : 0;
-  if (key === 'month') return member.xpMonth === today.slice(0, 7) ? Number(member.monthlyXp || 0) : 0;
-  return member.xpYear === today.slice(0, 4) ? Number(member.yearlyXp || 0) : 0;
-}
-
-function earnedBadges(member, members) {
+function earnedBadges(member) {
   if (!member) return [];
-  const contributors = members.filter((item) => ['owner', 'contributor'].includes(item.role));
-  return ACHIEVEMENT_BADGES.filter((badge) => {
-    const score = periodXp(member, badge.key);
-    return score > 0 && score === Math.max(0, ...contributors.map((item) => periodXp(item, badge.key)));
-  });
+  return ACHIEVEMENT_BADGES.filter((badge) => (member.earnedBadgeTypes || []).includes(badge.key));
 }
 
 function AchievementBadge({ badge, selected = false, small = false }) {
   if (!badge) return null;
-  return <span className={`achievement-badge achievement-badge--${badge.key} ${selected ? 'selected' : ''} ${small ? 'achievement-badge--small' : ''}`} title={badge.detail}><Award size={small ? 12 : 17} /><b>{badge.icon}</b><span>{badge.name}</span></span>;
+  return <span className={`achievement-badge achievement-badge--${badge.key} ${selected ? 'selected' : ''} ${small ? 'achievement-badge--small' : ''}`} title={badge.detail}><b aria-hidden="true">{badge.emoji}</b>{!small && <span>{badge.name}</span>}</span>;
 }
 
-function XpProgressCard({ member, members, onLeaderboard }) {
+function XpProgressCard({ member, onLeaderboard }) {
   const progress = xpProgress(member?.xp || 0);
-  const badges = earnedBadges(member, members);
+  const badges = earnedBadges(member);
   return (
     <button className="xp-hero" onClick={onLeaderboard}>
-      <div className="xp-hero__rank"><RankBadge level={progress.level} /><span><small>Your contributor rank</small><strong>{progress.level.name}</strong></span></div>
+      <div className="xp-hero__rank"><RankBadge level={progress.level} /><span><small>Your gemstone tier</small><strong>{progress.level.name}</strong><em>{progress.level.title}</em></span></div>
       <div className="xp-hero__progress"><span><strong>{member?.xp || 0} XP</strong><em>{progress.remaining ? `${progress.remaining} to ${xpProgress(progress.level.next).level.name}` : 'Highest level reached'}</em></span><span className="xp-track"><i style={{ width: `${progress.percent}%` }} /></span></div>
-      <div className="xp-hero__streak"><Flame size={25} /><span><strong>{member?.streakDays || 0}</strong><small>day streak</small></span></div>
       <div className="xp-hero__badges">{badges.slice(0, 2).map((badge) => <AchievementBadge key={badge.key} badge={badge} small />)}{!badges.length && <span>Take the weekly lead to earn a badge</span>}</div>
       <ArrowRight size={18} />
     </button>
@@ -1056,7 +1066,7 @@ function LeaderboardPage({ members }) {
   return (
     <div className="page-enter">
       <PageHeading eyebrow="Fresh every Monday" title="Weekly contributor leaderboard" body="Assignments earn 20 XP and reminders earn 8 XP. Keep the class useful; the week’s momentum matters more than lifetime totals." />
-      {contributors.length ? <div className="leaderboard-list">{contributors.map((member, index) => { const level = xpProgress(member.xp || 0).level; const worn = ACHIEVEMENT_BADGES.find((badge) => badge.key === member.equippedBadge); return <article className={index < 3 ? `leaderboard-row podium-${index + 1}` : 'leaderboard-row'} key={member.id}><span className="leaderboard-position">{index + 1}</span><RankBadge level={level} small /><Avatar name={member.name} photoURL={member.photoURL} badge={member.equippedBadge} /><div><strong>{member.name}</strong><span>{roleLabel(member.role)} · {level.name}</span>{worn && <AchievementBadge badge={worn} small />}</div><div className="leaderboard-score"><strong>{member.currentWeeklyXp}</strong><span>XP this week</span></div><small>{member.xp || 0} lifetime XP</small></article>; })}</div> : <EmptyState icon={Trophy} title="The board is wide open" body="No one has earned XP this week. Post useful work or a class reminder to claim the first spot." />}
+      {contributors.length ? <div className="leaderboard-list">{contributors.map((member, index) => { const progress = xpProgress(member.xp || 0); return <article className={index < 3 ? `leaderboard-row podium-${index + 1}` : 'leaderboard-row'} key={member.id}><span className="leaderboard-position">{index + 1}</span><Avatar name={member.name} photoURL={member.photoURL} profileEmoji={member.profileEmoji} badge={member.equippedBadge} /><div className="leaderboard-identity"><strong>{member.name}</strong><span>{roleLabel(member.role)} · {progress.level.title}</span><span className="leaderboard-mini-track"><i style={{ width: `${progress.percent}%` }} /></span></div><RankBadge level={progress.level} small /><div className="leaderboard-score"><strong>{member.currentWeeklyXp}</strong><span>XP this week</span></div><small>{member.xp || 0} lifetime XP</small></article>; })}</div> : <EmptyState icon={Trophy} title="The board is wide open" body="No one has earned XP this week. Post useful work or a class reminder to claim the first spot." />}
     </div>
   );
 }
@@ -1073,11 +1083,12 @@ function EmptyState({ icon: Icon, title, body, action, onAction }) {
   return <div className="empty-state"><span><Icon size={27} /></span><h3>{title}</h3><p>{body}</p>{action && <button className="secondary-button" onClick={onAction}><Plus size={16} /> {action}</button>}</div>;
 }
 
-function Avatar({ name, photoURL = '', badge = '', small = false, ...props }) {
+function Avatar({ name, photoURL = '', profileEmoji = '', badge = '', small = false, ...props }) {
   const palette = ['navy', 'coral', 'aqua', 'gold', 'violet'];
   const safeName = String(name || 'Class member');
   const index = [...safeName].reduce((sum, char) => sum + char.charCodeAt(0), 0) % palette.length;
-  return <span className={`avatar avatar--${palette[index]} ${small ? 'avatar--small' : ''} ${badge ? 'avatar--badged' : ''}`} {...props}>{photoURL ? <img src={photoURL} alt="" /> : initials(safeName)}{badge && <i>{badge === 'week' ? '7' : badge === 'month' ? '30' : '★'}</i>}</span>;
+  const flair = ACHIEVEMENT_BADGES.find((item) => item.key === badge);
+  return <span className={`avatar-cluster ${small ? 'avatar-cluster--small' : ''}`} {...props}><span className={`avatar avatar--${palette[index]} ${small ? 'avatar--small' : ''}`}>{profileEmoji ? <b className="avatar-emoji">{profileEmoji}</b> : photoURL ? <img src={photoURL} alt="" /> : initials(safeName)}</span>{flair && <AchievementBadge badge={flair} small />}</span>;
 }
 
 function CopyCode({ code }) {
@@ -1126,13 +1137,16 @@ function CreateClassForm({ user, onDone }) {
   return <form className="stack-form class-form" onSubmit={submit}><Field label="Class name" icon={GraduationCap}><input value={name} onChange={(event) => setName(event.target.value)} placeholder="10B Study Room" maxLength={80} required autoFocus /></Field><p className="form-help">That’s all you need. Jaji will generate the private join code automatically.</p>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<button className="primary-button primary-button--large" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Plus size={18} />} Create classroom</button></form>;
 }
 
-function ProfileSettingsModal({ user, membership, members, classIds, onClose, onDone }) {
+const PROFILE_EMOJIS = ['😀', '😎', '🤓', '🥳', '🫡', '🧠', '🦊', '🐼', '🐯', '🐸', '🐙', '🦋', '🌻', '🌈', '⚡', '🔥', '🪐', '🚀', '🎨', '🎧', '📚', '✏️', '🧪', '🔭', '💎', '🧿', '🍄', '🪩', '🛸', '🏆'];
+
+function ProfileSettingsModal({ user, membership, classIds, onClose, onDone }) {
   const [displayName, setDisplayName] = useState(membership?.name || user.displayName || '');
   const [photoURL, setPhotoURL] = useState(membership?.photoURL || user.photoURL || '');
+  const [profileEmoji, setProfileEmoji] = useState(membership?.profileEmoji || '');
   const [equippedBadge, setEquippedBadge] = useState(membership?.equippedBadge || '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const badges = earnedBadges(membership, members);
+  const badges = earnedBadges(membership);
 
   async function choosePhoto(event) {
     const file = event.target.files?.[0];
@@ -1145,6 +1159,7 @@ function ProfileSettingsModal({ user, membership, members, classIds, onClose, on
     setError('');
     try {
       setPhotoURL(await uploadProfilePhoto(file));
+      setProfileEmoji('');
     } catch (uploadError) {
       setError(firebaseMessage(uploadError));
     } finally {
@@ -1161,7 +1176,7 @@ function ProfileSettingsModal({ user, membership, members, classIds, onClose, on
     setBusy(true);
     setError('');
     try {
-      const values = { displayName: displayName.trim(), photoURL, equippedBadge };
+      const values = { displayName: displayName.trim(), photoURL, profileEmoji, equippedBadge };
       await updateProfile(user, { displayName: values.displayName, photoURL: values.photoURL || null });
       await updateUserProfile(user, classIds, values);
       onDone();
@@ -1172,7 +1187,7 @@ function ProfileSettingsModal({ user, membership, members, classIds, onClose, on
     }
   }
 
-  return <Modal title="Profile & badges" eyebrow="Your Jaji identity" onClose={onClose} size="modal-card--wide"><form className="profile-settings" onSubmit={submit}><section className="profile-photo-editor"><div className="profile-photo-preview"><Avatar name={displayName} photoURL={photoURL} badge={equippedBadge} /><label><Camera size={16} /><span>{busy ? 'Uploading…' : 'Change photo'}</span><input type="file" accept="image/*" onChange={choosePhoto} disabled={busy} /></label></div><Field label="Display name" icon={UserCheck}><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={60} required /></Field></section><section className="badge-wardrobe"><div><p className="eyebrow">Badge wardrobe</p><h3>Wear an achievement</h3><p>Lead the class for a week, month, or year to unlock badges beside your profile.</p></div><div className="badge-options"><button type="button" className={!equippedBadge ? 'selected' : ''} onClick={() => setEquippedBadge('')}><span>None</span><small>Clean profile</small></button>{ACHIEVEMENT_BADGES.map((badge) => { const earned = badges.some((item) => item.key === badge.key); return <button type="button" key={badge.key} disabled={!earned} className={equippedBadge === badge.key ? 'selected' : ''} onClick={() => earned && setEquippedBadge(badge.key)}><AchievementBadge badge={badge} /><small>{earned ? badge.detail : 'Keep contributing to unlock'}</small></button>; })}</div></section>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={17} />}Save profile</button></div></form></Modal>;
+  return <Modal title="Make your profile yours" eyebrow="Identity & flair" onClose={onClose} size="modal-card--wide"><form className="profile-settings" onSubmit={submit}><section className="profile-photo-editor"><div className="profile-photo-preview"><Avatar name={displayName} photoURL={photoURL} profileEmoji={profileEmoji} badge={equippedBadge} /><div><button type="button" className="text-button" onClick={() => { setProfileEmoji(''); setPhotoURL(''); }}>Use initials</button><label><Camera size={16} /><span>{busy ? 'Uploading…' : 'Upload photo'}</span><input type="file" accept="image/*" onChange={choosePhoto} disabled={busy} /></label></div></div><Field label="Display name" icon={UserCheck}><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={60} required /></Field></section><section className="emoji-studio"><div><p className="eyebrow">Emoji avatar studio</p><h3>Pick your classroom face</h3><p>Choose one below or paste any emoji you like.</p></div><label className="emoji-custom"><span>Any emoji</span><input value={profileEmoji} onChange={(event) => { setProfileEmoji(Array.from(event.target.value).slice(0, 2).join('')); setPhotoURL(''); }} placeholder="✨" /></label><div className="emoji-grid">{PROFILE_EMOJIS.map((emoji) => <button type="button" key={emoji} className={profileEmoji === emoji ? 'selected' : ''} onClick={() => { setProfileEmoji(emoji); setPhotoURL(''); }}>{emoji}</button>)}</div></section><section className="badge-wardrobe"><div><p className="eyebrow">Badge wardrobe</p><h3>Wear an achievement</h3><p>Earned pins sit proudly beside your profile—not on top of it.</p></div><div className="badge-options"><button type="button" className={!equippedBadge ? 'selected' : ''} onClick={() => setEquippedBadge('')}><span>None</span><small>Clean profile</small></button>{ACHIEVEMENT_BADGES.map((badge) => { const earned = badges.some((item) => item.key === badge.key); return <button type="button" key={badge.key} disabled={!earned} className={equippedBadge === badge.key ? 'selected' : ''} onClick={() => earned && setEquippedBadge(badge.key)}><AchievementBadge badge={badge} /><small>{earned ? badge.detail : 'Keep contributing to unlock'}</small></button>; })}</div></section>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={17} />}Save profile</button></div></form></Modal>;
 }
 
 function ContributorRequestModal({ activeClass, user, existing, onClose, onDone }) {
@@ -1254,17 +1269,13 @@ function AnnouncementFormModal({ activeClass, user, onClose, onDone }) {
   return <Modal title="Post a class reminder" eyebrow={activeClass.name} onClose={onClose}><form className="stack-form" onSubmit={submit}><Field label="Headline" icon={Bell}><input value={values.title} onChange={update('title')} placeholder="Bring graph paper tomorrow" maxLength={100} required /></Field><label className="plain-field"><span>Details</span><textarea value={values.body} onChange={update('body')} placeholder="Keep it useful and specific…" maxLength={800} required /></label><div className="form-row"><CustomDatePicker label="Visible through" value={values.expiresOn} min={new Date().toISOString().slice(0, 10)} required onChange={(expiresOn) => setValues((current) => ({ ...current, expiresOn }))} /><label className="plain-field"><span>Style</span><select value={values.tone} onChange={update('tone')}><option value="info">General information</option><option value="urgent">Deadline or urgent</option><option value="celebrate">Good news</option></select></label></div><p className="form-help">The reminder disappears automatically after this date.</p><label className="check-field"><input type="checkbox" checked={values.pinned} onChange={(event) => setValues((current) => ({ ...current, pinned: event.target.checked }))} /><span><strong>Pin this reminder</strong><small>Keep it visually prominent for the class.</small></span></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Send size={17} />} Post reminder</button></div></form></Modal>;
 }
 
-function ScheduleEventModal({ activeClass, user, onClose, onDone }) {
-  const [values, setValues] = useState({ title: '', details: '', date: '', startTime: '', endTime: '', type: 'class' });
+function ScheduleEventModal({ activeClass, user, initial = {}, onClose, onDone }) {
+  const [values, setValues] = useState({ title: initial.title || '', details: initial.details || '', day: initial.day || 'mon', period: initial.period || 1, startTime: initial.startTime || '', endTime: initial.endTime || '', type: initial.type || 'class' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const update = (field) => (event) => setValues((current) => ({ ...current, [field]: event.target.value }));
   async function submit(event) {
     event.preventDefault();
-    if (!values.date) {
-      setError('Choose a date for the timetable entry.');
-      return;
-    }
     setBusy(true);
     setError('');
     try {
@@ -1275,7 +1286,13 @@ function ScheduleEventModal({ activeClass, user, onClose, onDone }) {
       setBusy(false);
     }
   }
-  return <Modal title="Add to the timetable" eyebrow={activeClass.name} onClose={onClose}><form className="stack-form" onSubmit={submit}><Field label="Title" icon={CalendarDays}><input value={values.title} onChange={update('title')} placeholder="Physics lab" maxLength={100} required /></Field><CustomDatePicker label="Date" value={values.date} onChange={(date) => setValues((current) => ({ ...current, date }))} required /><div className="form-row"><label className="plain-field"><span>Starts <small>Optional</small></span><input type="time" value={values.startTime} onChange={update('startTime')} /></label><label className="plain-field"><span>Ends <small>Optional</small></span><input type="time" value={values.endTime} onChange={update('endTime')} /></label></div><label className="plain-field"><span>Entry type</span><select value={values.type} onChange={update('type')}><option value="class">Class</option><option value="study">Study session</option><option value="exam">Exam</option><option value="event">Class event</option></select></label><label className="plain-field"><span>Details <small>Optional</small></span><textarea value={values.details} onChange={update('details')} placeholder="Room, topic, or anything people need to bring." maxLength={500} /></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Plus size={17} />}Add to timetable</button></div></form></Modal>;
+  async function deleteSlot() {
+    if (!window.confirm(`Remove “${initial.title}” from the weekly timetable?`)) return;
+    setBusy(true);
+    try { await removeScheduleEvent(activeClass.id, initial.id); onDone(); } catch (deleteError) { setError(firebaseMessage(deleteError)); setBusy(false); }
+  }
+  const canDelete = initial.id && (initial.authorId === user.uid || activeClass.ownerId === user.uid);
+  return <Modal title={initial.id ? 'Edit timetable slot' : 'Add a timetable slot'} eyebrow={activeClass.name} onClose={onClose}><form className="stack-form timetable-form" onSubmit={submit}><div className="form-row"><label className="plain-field"><span>Day</span><select value={values.day} onChange={update('day')} disabled={Boolean(initial.id)}><option value="mon">Monday</option><option value="tue">Tuesday</option><option value="wed">Wednesday</option><option value="thu">Thursday</option><option value="fri">Friday</option><option value="all">Every weekday</option></select></label><label className="plain-field"><span>Period</span><select value={values.period} onChange={update('period')} disabled={Boolean(initial.id)}>{Array.from({ length: 12 }, (_, index) => <option value={index + 1} key={index + 1}>Period {index + 1}</option>)}</select></label></div><Field label={values.type === 'break' ? 'Break name' : 'Subject'} icon={BookOpen}><input value={values.title} onChange={update('title')} placeholder={values.type === 'break' ? 'Lunch break' : 'Mathematics'} maxLength={100} required /></Field><div className="form-row"><label className="plain-field"><span>Starts</span><input type="time" value={values.startTime} onChange={update('startTime')} /></label><label className="plain-field"><span>Ends</span><input type="time" value={values.endTime} onChange={update('endTime')} /></label></div><label className="plain-field"><span>Slot type</span><select value={values.type} onChange={update('type')}><option value="class">Class period</option><option value="break">Break</option><option value="study">Study hall</option><option value="exam">Exam period</option></select></label><label className="plain-field"><span>Room or note <small>Optional</small></span><input value={values.details} onChange={update('details')} placeholder="Room 204 · bring lab notebook" maxLength={120} /></label>{error && <div className="form-message"><CircleAlert size={16} />{error}</div>}<div className="modal-actions">{canDelete && <button type="button" className="danger-text-button timetable-delete" onClick={deleteSlot} disabled={busy}><Trash2 size={15} />Remove slot</button>}<button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={17} />}{initial.id ? 'Save changes' : 'Add period'}</button></div></form></Modal>;
 }
 
 function AssignmentDetail({ assignment, activeClass, user, isOwner, onClose, onDeleted, showNotice }) {
@@ -1284,6 +1301,7 @@ function AssignmentDetail({ assignment, activeClass, user, isOwner, onClose, onD
   const [localAssignment, setLocalAssignment] = useState(assignment);
   const [reporting, setReporting] = useState(false);
   const [reportReason, setReportReason] = useState('');
+  const [actionsOpen, setActionsOpen] = useState(false);
   useEffect(() => { getMyVote(activeClass.id, assignment.id, user.uid).then(setVote); }, [activeClass.id, assignment.id, user.uid]);
   async function voteFor(value) {
     if (working) return;
@@ -1299,36 +1317,38 @@ function AssignmentDetail({ assignment, activeClass, user, isOwner, onClose, onD
   async function deleteWork() {
     if (!window.confirm(`Delete “${assignment.title}” and its discussion?`)) return;
     setWorking(true);
-    try {
-      await removeAssignment(activeClass.id, assignment.id);
-      showNotice('Assignment deleted.');
-      onDeleted();
-    } catch (error) {
-      showNotice(firebaseMessage(error));
-      setWorking(false);
-    }
+    try { await removeAssignment(activeClass.id, assignment.id); showNotice('Assignment deleted.'); onDeleted(); }
+    catch (error) { showNotice(firebaseMessage(error)); setWorking(false); }
   }
   async function submitReport(event) {
     event.preventDefault();
-    if (reportReason.trim().length < 8) {
-      showNotice('Describe the serious problem before reporting.');
-      return;
-    }
+    if (reportReason.trim().length < 8) { showNotice('Describe the serious problem before reporting.'); return; }
     setWorking(true);
     try {
       await reportAssignment(activeClass.id, assignment, user, reportReason.trim());
       setLocalAssignment((current) => ({ ...current, reported: true, reportCount: Number(current.reportCount || 0) + 1 }));
-      setReporting(false);
-      setReportReason('');
-      showNotice('Report shared with the class and the contributor.');
-    } catch (error) {
-      showNotice(firebaseMessage(error));
-    } finally {
-      setWorking(false);
-    }
+      setReporting(false); setReportReason(''); showNotice('Report shared with the class and the contributor.');
+    } catch (error) { showNotice(firebaseMessage(error)); }
+    finally { setWorking(false); }
   }
   const state = verificationState(localAssignment.upvotes, localAssignment.downvotes);
-  return <Modal title={assignment.title} eyebrow={`${assignment.subject} · ${assignment.kind}`} onClose={onClose} size="modal-card--detail"><div className="assignment-detail"><section className="assignment-detail__main">{(isOwner || assignment.authorId === user.uid) && <button className="danger-text-button assignment-delete" onClick={deleteWork} disabled={working}><Trash2 size={15} />Delete assignment</button>}{localAssignment.reported && <div className="report-banner"><Flag size={18} /><div><strong>Reported by the class</strong><p>{localAssignment.reportCount || 1} classmate{localAssignment.reportCount === 1 ? '' : 's'} flagged a serious problem with this upload. Check it carefully.</p></div></div>}<div className={`detail-verification ${state.key}`}><span>{state.key === 'verified' ? <CheckCheck size={21} /> : state.key === 'review' ? <CircleAlert size={21} /> : <Clock3 size={21} />}</span><div><strong>{state.label}</strong><p>{state.key === 'verified' ? 'At least two classmates checked this and most agree it is correct.' : state.key === 'review' ? 'Classmates found something that may need another look.' : 'Vote after checking the work to help your class.'}</p></div></div>{assignment.description && <div className="detail-description"><h3>Contributor note</h3><p>{assignment.description}</p></div>}<div className="attachment-list"><h3>Attached work</h3>{assignment.attachments?.length ? assignment.attachments.map((file) => <a href={file.url} target="_blank" rel="noreferrer" key={file.url}><span>{file.type?.startsWith('image/') ? <FileImage size={19} /> : <FileText size={19} />}</span><div><strong>{file.name}</strong><small>{Math.ceil(file.size / 1024)} KB</small></div><ArrowRight size={17} /></a>) : <p className="muted-copy">No file was attached to this assignment.</p>}</div><div className="vote-box"><div><p className="eyebrow">Check the work</p><h3>Does this look correct?</h3><p>Your vote can be changed any time.</p></div><div><button className={vote === 1 ? 'active good' : ''} onClick={() => voteFor(1)} disabled={working}><ThumbsUp size={18} /><span>Correct</span><b>{localAssignment.upvotes || 0}</b></button><button className={vote === -1 ? 'active bad' : ''} onClick={() => voteFor(-1)} disabled={working}><ThumbsDown size={18} /><span>Needs review</span><b>{localAssignment.downvotes || 0}</b></button></div></div>{assignment.authorId !== user.uid && <div className="report-work"><button className="danger-text-button" onClick={() => setReporting((current) => !current)}><Flag size={15} />Report a serious problem</button>{reporting && <form onSubmit={submitReport}><label htmlFor="report-reason">What is seriously wrong with this upload?</label><textarea id="report-reason" value={reportReason} onChange={(event) => setReportReason(event.target.value)} maxLength={400} placeholder="For example: the uploaded file contains unrelated or unsafe material." autoFocus /><div><button type="button" className="secondary-button" onClick={() => setReporting(false)}>Cancel</button><button className="danger-button" disabled={working || reportReason.trim().length < 8}>Send report</button></div></form>}</div>}</section><aside className="assignment-detail__thread"><ThreadRoom compact assignment={assignment} activeClass={activeClass} user={user} isOwner={isOwner} showNotice={showNotice} /></aside></div></Modal>;
+  const canDelete = isOwner || assignment.authorId === user.uid;
+  return (
+    <Modal title={assignment.title} eyebrow={`${assignment.subject} · ${assignment.kind}`} onClose={onClose} size="modal-card--detail">
+      <div className="assignment-detail">
+        <section className="assignment-detail__main">
+          <div className="detail-toolbar"><div><span>Shared by {assignment.authorName}</span>{assignment.dueDate && <strong><CalendarDays size={14} /> Due {new Date(`${assignment.dueDate}T12:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}</strong>}</div>{canDelete && <div className="detail-actions"><button className="icon-button" onClick={() => setActionsOpen((current) => !current)} aria-label="Assignment actions"><MoreHorizontal size={18} /></button>{actionsOpen && <div className="detail-actions__menu"><button onClick={deleteWork} disabled={working}><Trash2 size={15} />Delete assignment</button></div>}</div>}</div>
+          {localAssignment.reported && <div className="report-banner"><Flag size={18} /><div><strong>Reported by the class</strong><p>{localAssignment.reportCount || 1} classmate{localAssignment.reportCount === 1 ? '' : 's'} flagged a serious problem. Check this upload carefully.</p></div></div>}
+          <div className={`detail-verification ${state.key}`}><span>{state.key === 'verified' ? <CheckCheck size={21} /> : state.key === 'review' ? <CircleAlert size={21} /> : <Clock3 size={21} />}</span><div><strong>{state.label}</strong><p>{state.key === 'verified' ? 'At least two classmates checked this and most agree it is correct.' : state.key === 'review' ? 'Classmates found something that may need another look.' : 'Open the attachment, check the work, then cast your vote.'}</p></div></div>
+          {assignment.description && <div className="detail-description"><h3>Contributor note</h3><p>{assignment.description}</p></div>}
+          <div className="attachment-list"><div className="detail-section-heading"><div><p className="eyebrow">Files</p><h3>Attached work</h3></div><span>{assignment.attachments?.length || 0} file{assignment.attachments?.length === 1 ? '' : 's'}</span></div>{assignment.attachments?.length ? assignment.attachments.map((file) => <a href={file.url} target="_blank" rel="noreferrer" key={file.url}><span>{file.type?.startsWith('image/') ? <FileImage size={19} /> : <FileText size={19} />}</span><div><strong>{file.name}</strong><small>{Math.ceil(file.size / 1024)} KB · Opens in Google Drive</small></div><span className="attachment-open">Open <ArrowRight size={15} /></span></a>) : <div className="attachment-empty"><FileText size={22} /><span><strong>No file attached</strong><small>The contributor shared assignment details only.</small></span></div>}</div>
+          <div className="vote-box"><div><p className="eyebrow">Community check</p><h3>Does this look correct?</h3><p>Your vote can be changed any time.</p></div><div><button className={vote === 1 ? 'active good' : ''} onClick={() => voteFor(1)} disabled={working}><ThumbsUp size={19} /><span>Looks correct</span><b>{localAssignment.upvotes || 0}</b></button><button className={vote === -1 ? 'active bad' : ''} onClick={() => voteFor(-1)} disabled={working}><ThumbsDown size={19} /><span>Needs review</span><b>{localAssignment.downvotes || 0}</b></button></div></div>
+          {assignment.authorId !== user.uid && <div className="report-work"><button className="danger-text-button" onClick={() => setReporting((current) => !current)}><Flag size={15} />Report a serious problem</button>{reporting && <form onSubmit={submitReport}><label htmlFor="report-reason">What is seriously wrong with this upload?</label><textarea id="report-reason" value={reportReason} onChange={(event) => setReportReason(event.target.value)} maxLength={400} placeholder="For example: the uploaded file contains unrelated or unsafe material." autoFocus /><div><button type="button" className="secondary-button" onClick={() => setReporting(false)}>Cancel</button><button className="danger-button" disabled={working || reportReason.trim().length < 8}>Send report</button></div></form>}</div>}
+        </section>
+        <aside className="assignment-detail__thread"><ThreadRoom compact assignment={assignment} activeClass={activeClass} user={user} isOwner={isOwner} showNotice={showNotice} /></aside>
+      </div>
+    </Modal>
+  );
 }
 
 export default App;

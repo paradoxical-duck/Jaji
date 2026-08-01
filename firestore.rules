@@ -54,7 +54,10 @@ service cloud.firestore {
           && request.resource.data.role == resource.data.role
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'xp', 'weeklyXp', 'xpWeek', 'monthlyXp', 'xpMonth', 'yearlyXp', 'xpYear',
-            'streakDays', 'lastContributionDate', 'name', 'photoURL', 'equippedBadge'
+            'streakDays', 'lastContributionDate', 'lastAwardBase', 'lastAwardBonus',
+            'previousWeekKey', 'previousWeeklyXp', 'previousMonthKey', 'previousMonthlyXp',
+            'previousYearKey', 'previousYearlyXp', 'name', 'photoURL', 'profileEmoji',
+            'equippedBadge'
           ])
           && request.resource.data.xp >= 0
           && request.resource.data.weeklyXp >= 0
